@@ -30,6 +30,38 @@ miklat-devops/
 └── .env.example
 ```
 
-## Локальный запуск
+## База данных
 
-_Будет заполнено на шаге, где появится `docker-compose.yml` и первые сервисы._
+Схема — PostgreSQL + PostGIS, 5 таблиц: `miklats`, `miklat_comments`, `miklat_reports`,
+`miklat_submissions`, `miklat_photos`. Спроектирована на основе реальных данных
+прод-приложения (см. `db/001_init.sql` и `db/seed/README.md`).
+
+### Локальный запуск и проверка
+
+```bash
+# 1. поднять Postgres+PostGIS, схема применится автоматически при первом старте
+docker compose up -d postgres
+
+# 2. загрузить seed-данные (12 640 укрытий + реальные комментарии/жалобы/заявки)
+cd db
+python3 -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash; на Linux/macOS: source .venv/bin/activate
+pip install -r requirements.txt
+export DATABASE_URL="postgresql://miklat:miklat_dev_password@localhost:5432/miklat"
+python3 import_seed.py
+cd ..
+
+# 3. проверить, что данные на месте
+docker exec -it miklat-postgres psql -U miklat -d miklat -c "SELECT count(*) FROM miklats;"
+docker exec -it miklat-postgres psql -U miklat -d miklat -c \
+  "SELECT name, city, ST_AsText(geom::geometry) FROM miklats WHERE city IS NOT NULL LIMIT 5;"
+```
+
+Пример гео-запроса "ближайшее укрытие" (PostGIS), который дальше будет использовать `miklat-service`:
+
+```sql
+SELECT id, name, address, city,
+       ST_Distance(geom, ST_SetSRID(ST_MakePoint(34.7818, 32.0853), 4326)::geography) AS distance_m
+FROM miklats
+ORDER BY geom <-> ST_SetSRID(ST_MakePoint(34.7818, 32.0853), 4326)::geography
+LIMIT 5;
+```

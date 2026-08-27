@@ -1,0 +1,17 @@
+services:
+  postgres:
+    image: postgis/postgis:16-3.4
+    container_name: miklat-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: miklat
+      POSTGRES_PASSWORD: miklat_dev_password
+      POSTGRES_DB: miklat
+    ports:
+      - "5432:5432"
+    volumes:
+      - miklat_pgdata:/var/lib/postgresql/data
+      - ./db/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+
+volumes:
+  miklat_pgdata:
