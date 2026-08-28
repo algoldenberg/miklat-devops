@@ -151,5 +151,21 @@ services:
       - miklat-walking-routes
       - miklat-photos
 
+  # Публичный клиент (Фаза 1, шаг 8) — React+Vite+Leaflet, собран в статику и
+  # отдаётся через nginx (см. frontend/Dockerfile, frontend/nginx.conf).
+  # Единственный сервис из всего стека, который по плану должен быть виден
+  # "наружу" (остальные — внутренние, через gateway); адрес gateway для
+  # nginx-прокси "/api/*" зашит в nginx.conf как DNS-имя "miklat-gateway:8000"
+  # (то же имя, что и в environment у gateway ниже — обе стороны смотрят на
+  # один и тот же контейнер внутри одной docker-compose сети).
+  frontend:
+    build: ./frontend
+    container_name: miklat-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:8080"
+    depends_on:
+      - miklat-gateway
+
 volumes:
   miklat_pgdata:

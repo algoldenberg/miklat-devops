@@ -1,6 +1,7 @@
 """
-Тонкий клиент к AWS SNS — публикация уведомления о новой жалобе на укрытие
-(SNS-триггер #2, см. db/001_init.sql и combined-project-overview.md).
+Тонкий клиент к AWS SNS — публикация уведомлений о новой заявке на укрытие
+(SNS-триггер #1a) и о жалобе на существующее укрытие (SNS-триггер #2), см.
+db/001_init.sql и combined-project-overview.md.
 
 Тот же принцип, что и app/aws_client.py в miklat-photos: единственная точка,
 где сервис реально обращается к AWS, вынесена в отдельный модуль специально
@@ -44,6 +45,26 @@ def publish_report_notification(topic_arn: str, report: dict) -> None:
     _sns().publish(
         TopicArn=topic_arn,
         Subject="miklat-devops: новая жалоба на укрытие",
+        Message=json.dumps(message, ensure_ascii=False),
+    )
+
+
+def publish_submission_notification(topic_arn: str, submission: dict) -> None:
+    """SNS-триггер #1a: пользователь предложил новое укрытие (форма
+    'добавить укрытие' на фронтенде) — заявка легла в miklat_submissions
+    со статусом 'pending', ждёт admin-модерации (approve/reject)."""
+    message = {
+        "event": "new_submission_pending_moderation",
+        "submission_id": submission["id"],
+        "name": submission.get("name"),
+        "address": submission.get("address"),
+        "lon": submission["lon"],
+        "lat": submission["lat"],
+        "submitted_at": str(submission["submitted_at"]),
+    }
+    _sns().publish(
+        TopicArn=topic_arn,
+        Subject="miklat-devops: новая заявка на укрытие",
         Message=json.dumps(message, ensure_ascii=False),
     )
 

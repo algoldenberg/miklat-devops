@@ -56,6 +56,11 @@ def resolve_target(method: str, path: str) -> Optional[str]:
     if head == "route-to-miklat":
         return "miklat-walking-routes"
 
+    if head == "submissions" and len(segments) == 1 and method.upper() == "POST":
+        # Публичная форма "добавить укрытие" на фронтенде (SNS-триггер #1a) —
+        # не путать с /admin/submissions (модерация уже существующих заявок).
+        return "miklat-service"
+
     if head == "miklats":
         if len(segments) in (1, 2):
             # "" (список) / "nearest" / "{id}" — все три обслуживает miklat-service

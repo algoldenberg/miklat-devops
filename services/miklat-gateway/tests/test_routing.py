@@ -30,6 +30,8 @@ from app.routing import resolve_target
         ("POST", "/route", "miklat-walking-routes"),
         ("GET", "/route-to-miklat/12362", "miklat-walking-routes"),
         ("POST", "/route-through-miklats", "miklat-routes"),
+        # публичная заявка "добавить укрытие" (SNS-триггер #1a)
+        ("POST", "/submissions", "miklat-service"),
         # admin — по второму сегменту пути
         ("POST", "/admin/miklats", "miklat-service"),
         ("PATCH", "/admin/miklats/1", "miklat-service"),
@@ -63,6 +65,8 @@ def test_resolve_target_known_routes(method, path, expected):
         ("GET", "/route"),  # GET на /route не определён ни в одном сервисе — только POST
         ("DELETE", "/route"),
         ("GET", "/route-through-miklats"),  # только POST
+        ("GET", "/submissions"),  # только POST
+        ("PATCH", "/submissions/1"),  # публичного PATCH нет — правка только через /admin/submissions
     ],
 )
 def test_resolve_target_unknown_routes_return_none(method, path):

@@ -74,6 +74,18 @@ class SubmissionOut(BaseModel):
     reviewed_at: Optional[datetime] = None
 
 
+class SubmissionCreate(BaseModel):
+    """Публичная форма 'добавить укрытие' — попадает в очередь модерации,
+    ничего не создаёт в miklats напрямую (см. app/routers/submissions.py)."""
+    name: Optional[str] = Field(default=None, max_length=200)
+    address: Optional[str] = Field(default=None, max_length=300)
+    lon: float = Field(..., ge=-180, le=180)
+    lat: float = Field(..., ge=-90, le=90)
+    type: Optional[str] = Field(default="public_shelter", max_length=50)
+    capacity: Optional[int] = Field(default=None, ge=0)
+    comment: Optional[str] = Field(default=None, max_length=2000)
+
+
 class SubmissionApprove(BaseModel):
     reviewed_by: Optional[str] = "admin"
 

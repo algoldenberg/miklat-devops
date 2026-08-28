@@ -90,6 +90,7 @@ CRUD укрытий, поиск ближайшего укрытия (PostGIS), �
 | GET | `/miklats/{id}` | одно укрытие |
 | GET | `/miklats/nearest` | ближайшие к точке (`lon`, `lat`, `limit`, `max_distance_m`) |
 | POST | `/miklats/{id}/reports` | пожаловаться на укрытие (`issue_type`: `closed`\|`wrong_address`\|`other`, `comment?`, `contact?`) |
+| POST | `/submissions` | заявка на новое укрытие (форма "добавить укрытие" на фронтенде, SNS-триггер #1a) — `name?`, `address?`, `lon`, `lat`, `type?`, `capacity?`, `comment?`; попадает в очередь модерации, `miklats` напрямую не создаёт |
 
 Admin-эндпоинты (заголовок `X-Admin-Key: <ADMIN_API_KEY>`, см. `.env.example`):
 
@@ -105,8 +106,15 @@ Admin-эндпоинты (заголовок `X-Admin-Key: <ADMIN_API_KEY>`, с�
 | POST | `/admin/reports/{id}/resolve` | отметить жалобу решённой |
 | POST | `/admin/reports/{id}/invalid` | отметить жалобу необоснованной |
 
-Если публикация в SNS не удалась — жалоба (как и заявка/фото в miklat-photos)
+Если публикация в SNS не удалась — жалоба/заявка (как и фото в miklat-photos)
 всё равно считается сохранённой; ошибка публикации только логируется на сервере.
+
+`POST /submissions` — тот самый SNS-триггер #1a, который был описан ещё в
+комментарии к таблице `miklat_submissions` в `db/001_init.sql` (Фаза 1 шаг 1),
+но публичного эндпоинта для него не было до Фазы 1 шага 8 (фронтенду нужна
+была форма "добавить укрытие", и без него её не на что было вешать). Ничего
+не создаёт в `miklats` напрямую — только заявку со статусом `pending`,
+дальше `POST /admin/submissions/{id}/approve`/`reject`, как и раньше.
 
 **Тот же единственный ручной AWS-шаг**, что описан у `miklat-photos` ниже — один
 SNS topic `miklat-notifications` на оба сервиса (уведомления о фото и о жалобах
@@ -146,6 +154,10 @@ curl "http://localhost:8000/miklats/nearest?lon=34.7818&lat=32.0853&limit=3"
 # жалоба на укрытие (публично, без ключа)
 curl -X POST http://localhost:8000/miklats/1/reports -H "Content-Type: application/json" \
   -d '{"issue_type":"wrong_address","comment":"Координаты указывают на соседний двор"}'
+
+# заявка на новое укрытие (публично, без ключа)
+curl -X POST http://localhost:8000/submissions -H "Content-Type: application/json" \
+  -d '{"name":"Новое укрытие во дворе","lon":34.79,"lat":32.09,"capacity":15}'
 
 # admin — без ключа должно быть 401
 curl -i -X POST http://localhost:8000/admin/miklats -H "Content-Type: application/json" -d '{"lon":34.78,"lat":32.08}'
@@ -406,7 +418,7 @@ curl http://localhost:8005/ready
 ### miklat-gateway
 
 Единая точка входа: маршрутизирует запрос к нужному сервису по пути, без
-собственного состояния/БД. На EC2 #1 (프론트/frontend, см. `combined-project-overview.md`)
+собственного состояния/БД. На фронтенде (см. `combined-project-overview.md`)
 nginx будет проксировать `/api/*` сюда, снимая префикс `/api` — сам gateway
 работает с теми же "голыми" путями, что и сами backend-сервисы (см. таблицу
 ниже), поэтому им самим менять ничего не пришлось.
@@ -417,6 +429,7 @@ nginx будет проксировать `/api/*` сюда, снимая пре
 | `GET/POST /miklats/{id}/comments`, `GET /miklats/{id}/rating-summary` | `miklat-comments` |
 | `GET/POST /miklats/{id}/photos` | `miklat-photos` |
 | `POST /miklats/{id}/reports` | `miklat-service` |
+| `POST /submissions` | `miklat-service` |
 | `POST /route` (две точки) | `miklat-walking-routes` |
 | `GET /route-to-miklat/{id}` | `miklat-walking-routes` |
 | `POST /route-through-miklats` | `miklat-routes` |
@@ -468,4 +481,47 @@ curl http://localhost:8000/ready                       # агрегирован�
 curl http://localhost:8000/miklats                      # -> miklat-service, как будто напрямую
 curl "http://localhost:8000/route-to-miklat/12362?from_lon=34.78&from_lat=32.08"   # -> miklat-walking-routes
 ```
+
+### Frontend
+
+React + Vite + Leaflet (Фаза 1, шаг 8) — публичный клиент: карта укрытий,
+список с фильтрами (город/тип), детальная карточка укрытия (комментарии и
+рейтинг, одобренные фото + загрузка новых), построение пешего маршрута от
+геолокации пользователя до выбранного укрытия, форма жалобы и форма
+"добавить укрытие" (координаты выбираются кликом по карте). Обращается
+только к `miklat-gateway`, через единый префикс `/api/*` — сам фронтенд
+никогда не знает адресов остальных пяти сервисов.
+
+Собран в статику (`vite build`) и отдаётся через nginx (`frontend/Dockerfile`,
+`frontend/nginx.conf`) — nginx же проксирует `/api/*` на `miklat-gateway`
+внутри docker-сети (тот же reverse-proxy приём, что запланирован для
+настоящего EC2-frontend в Ansible `playbooks/nginx.yml`, Фаза 2). Порт внутри
+контейнера — `8080` (non-root nginx), наружу через docker-compose — `3000`.
+
+Локальный запуск без Docker (нужен уже поднятый `miklat-gateway`, порт 8000):
+
+```bash
+cd frontend
+npm install
+npm run dev   # http://localhost:5173, "/api/*" проксируется на localhost:8000 (см. vite.config.js)
+```
+
+Через docker-compose (поднимет весь стек, порт наружу — `3000`):
+
+```bash
+docker compose up -d --build
+# открыть в браузере http://localhost:3000
+```
+
+Проверено (headless-браузер в песочнице Claude, реальный шлюз подменён
+минимальной заглушкой на fetch-уровне — DOM/сеть настоящие, только backend
+не настоящий AWS/Postgres): рендер карты и списка укрытий, выбор укрытия по
+клику на карте и в списке, геолокация подставляется в "ближайшие укрытия",
+построение маршрута и отрисовка линии на карте, отправка комментария и
+немедленное обновление списка, отправка жалобы, форма "добавить укрытие" с
+выбором точки по клику на карте. По ходу проверки найден и исправлен один
+реальный баг: модальное окно формы "добавить укрытие" перекрывало карту
+на весь экран, из-за чего клик "указать точку на карте" физически не мог
+долететь до самой карты — исправлено скрытием модалки на время выбора точки
+(остаётся только баннер-подсказка поверх карты).
 

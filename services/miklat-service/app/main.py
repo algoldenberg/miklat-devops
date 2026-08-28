@@ -6,7 +6,7 @@ from fastapi import FastAPI
 from app import aws_client
 from app.config import SNS_TOPIC_ARN
 from app.database import check_connection, close_pool, init_pool
-from app.routers import admin, miklats, reports
+from app.routers import admin, miklats, reports, submissions
 from app.schemas import HealthOut, ReadyOut
 
 logger = logging.getLogger("miklat-service")
@@ -28,6 +28,7 @@ app = FastAPI(
 
 app.include_router(miklats.router)
 app.include_router(reports.router)
+app.include_router(submissions.router)
 app.include_router(admin.router)
 
 

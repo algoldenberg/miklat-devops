@@ -180,6 +180,30 @@ _SUBMISSION_COLUMNS = """
 """
 
 
+def create_submission(data, submitted_by_ip: Optional[str]) -> dict:
+    """Публичное создание заявки на новое укрытие (SNS-триггер #1a). Тот же
+    принцип best-effort SNS, что и в create_report/create_photo: сбой
+    публикации не должен ронять сохранение самой заявки."""
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            f"""
+            INSERT INTO miklat_submissions
+                (name, address, geom, type, capacity, comment, submitted_by_ip, status)
+            VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s, %s, 'pending')
+            RETURNING {_SUBMISSION_COLUMNS};
+            """,
+            [data.name, data.address, data.lon, data.lat, data.type, data.capacity, data.comment, submitted_by_ip],
+        )
+        submission = cur.fetchone()
+
+    try:
+        aws_client.publish_submission_notification(SNS_TOPIC_ARN, submission)
+    except Exception as exc:  # noqa: BLE001 - best-effort, см. docstring выше
+        logger.warning("SNS publish failed for submission_id=%s: %s", submission["id"], exc)
+
+    return submission
+
+
 def list_submissions(status_filter: Optional[str], limit: int, offset: int) -> list[dict]:
     conditions = []
     params: list = []
