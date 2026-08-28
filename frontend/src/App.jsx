@@ -40,8 +40,10 @@ export default function App() {
   const loadList = () => {
     setLoadingList(true);
     const query = { city: filters.city || undefined, type: filters.type || undefined, limit: 200 };
+    // MAX_NEAREST_LIMIT в miklat-service — 50 (в отличие от MAX_LIST_LIMIT — 200
+    // для обычного списка); превышение 50 здесь раньше давало 422.
     const request = userLocation && !filters.city && !filters.type
-      ? api.nearestMiklats(userLocation.lon, userLocation.lat, 100)
+      ? api.nearestMiklats(userLocation.lon, userLocation.lat, 50)
       : api.listMiklats(query);
 
     request

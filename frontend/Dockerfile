@@ -11,15 +11,25 @@ COPY . .
 RUN npm run build
 
 FROM nginx:1.27-alpine
-# non-root: nginx:alpine уже включает пользователя nginx, конфиг ниже слушает
-# порт 8080 (не 80), чтобы не требовать привилегий на bind.
+# non-root: nginx:alpine уже включает пользователя nginx. Порт (8080) задан
+# прямо в nginx.conf.
+#
+# nginx-main.conf целиком заменяет /etc/nginx/nginx.conf из базового образа —
+# единственное отличие от оригинала: pid переопределён на /tmp/nginx.pid
+# (см. комментарий в самом файле). Раньше это пытались патчить через `sed`
+# поверх дефолтного nginx.conf, но в этом образе sed — это busybox sed, а не
+# GNU sed: `\s` он молча не подставляет (без ошибки — просто no-op), из-за
+# чего pid оставался на дефолтном /run/nginx.pid, недоступном для записи
+# непривилегированному пользователю nginx — сервис падал в restart-loop
+# ("Permission denied"). Тот же урок, что и с MSYS-путями на Windows: не
+# полагаться на sed-эвристики, которые работают в одном окружении и молча
+# ничего не делают в другом — теперь конфиг просто полностью свой, без
+# патчинга на этапе сборки.
+COPY nginx-main.conf /etc/nginx/nginx.conf
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY --from=build /app/dist /usr/share/nginx/html
 
-RUN sed -i 's/listen\s*80;/listen 8080;/' /etc/nginx/conf.d/default.conf \
-    && chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/log/nginx /etc/nginx/conf.d \
-    && sed -i 's/^pid\s*\/var\/run\/nginx.pid;/pid \/tmp\/nginx.pid;/' /etc/nginx/nginx.conf \
-    && touch /tmp/nginx.pid && chown nginx:nginx /tmp/nginx.pid
+RUN chown -R nginx:nginx /usr/share/nginx/html /var/cache/nginx /var/log/nginx /etc/nginx/conf.d
 
 USER nginx
 EXPOSE 8080
