@@ -147,3 +147,63 @@ curl http://localhost:8001/health
 Тестов пока минимум (smoke-тест `/health`) — полноценный прогон тестов на каждый коммит
 появится в Фазе 4 (Jenkinsfile-ci).
 
+### miklat-comments
+
+Комментарии и рейтинги укрытий, привязка к `miklat_id`. Аккаунтов пользователей в
+приложении нет (как и в проде) — создание и чтение комментариев публичны,
+`username` — произвольная строка (по умолчанию `Anonymous`). Правка/удаление
+(модерация спама) — под тем же `X-Admin-Key`, что и у `miklat-service`.
+FastAPI + psycopg2, порт `8000` внутри контейнера (наружу через docker-compose — `8002`).
+
+Публичные эндпоинты:
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/health` | liveness |
+| GET | `/ready` | readiness (проверка БД) |
+| GET | `/miklats/{miklat_id}/comments` | список комментариев (пагинация `limit`/`offset`) |
+| POST | `/miklats/{miklat_id}/comments` | добавить комментарий (`username?`, `comment`, `rating?` 1–5) |
+| GET | `/miklats/{miklat_id}/rating-summary` | `comments_count`, `ratings_count`, `average_rating` |
+
+Admin-эндпоинты (заголовок `X-Admin-Key`):
+
+| Метод | Путь | Описание |
+|---|---|---|
+| PATCH | `/admin/comments/{id}` | правка (модерация) |
+| DELETE | `/admin/comments/{id}` | удаление (спам/абьюз) |
+
+Локальный запуск — аналогично `miklat-service` (Postgres уже поднят и заполнен):
+
+```bash
+cd services/miklat-comments
+python3 -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash; на Linux/macOS: source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+cp .env.example .env   # тот же ADMIN_API_KEY, что и в miklat-service, если хотите единый ключ
+export DATABASE_URL="postgresql://miklat:miklat_dev_password@localhost:5432/miklat"
+export ADMIN_API_KEY="dev-secret-123"
+
+python3 -m pytest tests/ -v
+uvicorn app.main:app --reload --port 8000
+```
+
+Проверка вручную:
+
+```bash
+curl http://localhost:8000/health
+curl -X POST http://localhost:8000/miklats/1/comments -H "Content-Type: application/json" \
+  -d '{"username":"Alex","comment":"Чисто, доступно","rating":4}'
+curl http://localhost:8000/miklats/1/comments
+curl http://localhost:8000/miklats/1/rating-summary
+
+# модерация
+curl -X DELETE http://localhost:8000/admin/comments/1 -H "X-Admin-Key: dev-secret-123"
+```
+
+Через docker-compose (порт наружу — `8002`):
+
+```bash
+docker compose up -d --build
+curl http://localhost:8002/health
+```
+

@@ -31,5 +31,18 @@ services:
       postgres:
         condition: service_healthy
 
+  miklat-comments:
+    build: ./services/miklat-comments
+    container_name: miklat-comments
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://miklat:miklat_dev_password@postgres:5432/miklat
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-only-change-me}
+    ports:
+      - "8002:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
 volumes:
   miklat_pgdata:
