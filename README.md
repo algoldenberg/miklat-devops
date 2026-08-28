@@ -38,6 +38,11 @@ miklat-devops/
 
 ### Локальный запуск и проверка
 
+> Команда Python в примерах ниже — `python3`. На части Windows-систем (Git Bash)
+> установщик python.org регистрирует команду как `python` (без `3`) — если
+> `python3` не находится, замените на `python` (`python --version` покажет,
+> что стоит).
+
 ```bash
 # 1. поднять Postgres+PostGIS, схема применится автоматически при первом старте
 docker compose up -d postgres
@@ -65,3 +70,80 @@ FROM miklats
 ORDER BY geom <-> ST_SetSRID(ST_MakePoint(34.7818, 32.0853), 4326)::geography
 LIMIT 5;
 ```
+
+## Сервисы
+
+### miklat-service
+
+CRUD укрытий, поиск ближайшего укрытия (PostGIS), модерация заявок на новое укрытие
+(`miklat_submissions`). FastAPI + psycopg2 (без ORM), порт `8000` внутри контейнера
+(наружу через docker-compose — `8001`).
+
+Публичные эндпоинты (без авторизации):
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/health` | liveness, к БД не обращается |
+| GET | `/ready` | readiness, реальный `SELECT 1` в БД |
+| GET | `/miklats` | список (фильтры `city`, `type`, пагинация `limit`/`offset`) |
+| GET | `/miklats/{id}` | одно укрытие |
+| GET | `/miklats/nearest` | ближайшие к точке (`lon`, `lat`, `limit`, `max_distance_m`) |
+
+Admin-эндпоинты (заголовок `X-Admin-Key: <ADMIN_API_KEY>`, см. `.env.example`):
+
+| Метод | Путь | Описание |
+|---|---|---|
+| POST | `/admin/miklats` | создать укрытие напрямую |
+| PATCH | `/admin/miklats/{id}` | частичное обновление |
+| DELETE | `/admin/miklats/{id}` | удалить |
+| GET | `/admin/submissions` | список заявок (фильтр `status`, по умолчанию `pending`) |
+| POST | `/admin/submissions/{id}/approve` | одобрить → создаёт новое укрытие |
+| POST | `/admin/submissions/{id}/reject` | отклонить (обязателен `rejection_reason`) |
+
+Полная интерактивная документация — `/docs` (Swagger UI) после запуска сервиса.
+
+Локальный запуск и проверка (Postgres из шага выше уже должен быть поднят и заполнен):
+
+```bash
+cd services/miklat-service
+python3 -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash; на Linux/macOS: source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+cp .env.example .env   # и поменяйте ADMIN_API_KEY на что-то своё
+export DATABASE_URL="postgresql://miklat:miklat_dev_password@localhost:5432/miklat"
+export ADMIN_API_KEY="dev-secret-123"
+
+# юнит-тесты (не требуют БД)
+python3 -m pytest tests/ -v
+
+# сам сервис
+uvicorn app.main:app --reload --port 8000
+```
+
+Проверка вручную (в отдельном терминале, сервис уже запущен):
+
+```bash
+curl http://localhost:8000/health
+curl http://localhost:8000/ready
+curl "http://localhost:8000/miklats?limit=3"
+curl "http://localhost:8000/miklats/nearest?lon=34.7818&lat=32.0853&limit=3"
+
+# admin — без ключа должно быть 401
+curl -i -X POST http://localhost:8000/admin/miklats -H "Content-Type: application/json" -d '{"lon":34.78,"lat":32.08}'
+
+# admin — с ключом
+curl -X POST http://localhost:8000/admin/miklats \
+  -H "X-Admin-Key: dev-secret-123" -H "Content-Type: application/json" \
+  -d '{"name":"Test Shelter","city":"Tel Aviv","lon":34.78,"lat":32.08,"capacity":10}'
+```
+
+Через docker-compose (соберёт образ сам, порт наружу — `8001`):
+
+```bash
+docker compose up -d --build
+curl http://localhost:8001/health
+```
+
+Тестов пока минимум (smoke-тест `/health`) — полноценный прогон тестов на каждый коммит
+появится в Фазе 4 (Jenkinsfile-ci).
+

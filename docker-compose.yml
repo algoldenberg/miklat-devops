@@ -12,6 +12,24 @@ services:
     volumes:
       - miklat_pgdata:/var/lib/postgresql/data
       - ./db/001_init.sql:/docker-entrypoint-initdb.d/001_init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U miklat -d miklat"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  miklat-service:
+    build: ./services/miklat-service
+    container_name: miklat-service
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://miklat:miklat_dev_password@postgres:5432/miklat
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-only-change-me}
+    ports:
+      - "8001:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
 
 volumes:
   miklat_pgdata:
