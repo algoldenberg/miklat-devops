@@ -128,5 +128,28 @@ services:
       postgres:
         condition: service_healthy
 
+  # Единая точка входа (Фаза 1, шаг 7) — просто маршрутизатор, своего
+  # состояния/БД нет. depends_on без condition (сервисы ниже сами не
+  # объявляют healthcheck) — гарантирует только порядок запуска контейнеров,
+  # не их готовность; /ready у gateway честно пингует /health каждого.
+  miklat-gateway:
+    build: ./services/miklat-gateway
+    container_name: miklat-gateway
+    restart: unless-stopped
+    environment:
+      MIKLAT_SERVICE_URL: http://miklat-service:8000
+      MIKLAT_COMMENTS_URL: http://miklat-comments:8000
+      MIKLAT_ROUTES_URL: http://miklat-routes:8000
+      MIKLAT_WALKING_ROUTES_URL: http://miklat-walking-routes:8000
+      MIKLAT_PHOTOS_URL: http://miklat-photos:8000
+    ports:
+      - "8000:8000"
+    depends_on:
+      - miklat-service
+      - miklat-comments
+      - miklat-routes
+      - miklat-walking-routes
+      - miklat-photos
+
 volumes:
   miklat_pgdata:

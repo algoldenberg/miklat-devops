@@ -403,3 +403,69 @@ docker compose up -d --build
 curl http://localhost:8005/ready
 ```
 
+### miklat-gateway
+
+Единая точка входа: маршрутизирует запрос к нужному сервису по пути, без
+собственного состояния/БД. На EC2 #1 (프론트/frontend, см. `combined-project-overview.md`)
+nginx будет проксировать `/api/*` сюда, снимая префикс `/api` — сам gateway
+работает с теми же "голыми" путями, что и сами backend-сервисы (см. таблицу
+ниже), поэтому им самим менять ничего не пришлось.
+
+| Путь (пример) | Куда уходит |
+|---|---|
+| `GET/PATCH/DELETE /miklats`, `/miklats/{id}`, `/miklats/nearest` | `miklat-service` |
+| `GET/POST /miklats/{id}/comments`, `GET /miklats/{id}/rating-summary` | `miklat-comments` |
+| `GET/POST /miklats/{id}/photos` | `miklat-photos` |
+| `POST /miklats/{id}/reports` | `miklat-service` |
+| `POST /route` (две точки) | `miklat-walking-routes` |
+| `GET /route-to-miklat/{id}` | `miklat-walking-routes` |
+| `POST /route-through-miklats` | `miklat-routes` |
+| `/admin/miklats*`, `/admin/submissions*`, `/admin/reports*` | `miklat-service` |
+| `/admin/comments*` | `miklat-comments` |
+| `/admin/photos*` | `miklat-photos` |
+
+Собственный generic `POST /route` сервиса `miklat-routes` (произвольный
+список из 2–15 точек) наружу через gateway не выставлен — он избыточен по
+отношению к `/route-through-miklats` и двухточечному `/route` от
+`miklat-walking-routes`; коллизия путей между двумя сервисами на `/route`
+разрешена в пользу последнего (см. `app/routing.py`).
+
+`X-Admin-Key` gateway не проверяет и никак не трогает — просто пересылает
+заголовок как есть, аутентификацию по-прежнему делает конкретный backend.
+Тело запроса (в т.ч. `multipart/form-data` при загрузке фото) пересылается
+байт-в-байт, без разбора.
+
+`GET /ready` — не просто проверка себя, а реальный пинг `/health` всех
+пяти сервисов сразу; в ответе видно, какие именно недоступны:
+
+```json
+{"status":"degraded","services":{"miklat-service":"up","miklat-comments":"down", "...": "..."}}
+```
+
+Локальный запуск (нужны уже поднятые остальные сервисы — проще всего через
+docker-compose, см. ниже; для запуска вне docker-compose gateway достаточно
+знать их адреса через `.env`):
+
+```bash
+cd services/miklat-gateway
+python3 -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash; на Linux/macOS: source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+# юнит-тесты (таблица маршрутизации + сам прокси на ASGI-заглушке — реальная сеть не нужна)
+python3 -m pytest tests/ -v
+
+cp .env.example .env   # если сервисы уже подняты через docker-compose, подставьте их localhost-порты
+uvicorn app.main:app --reload --port 8000
+```
+
+Проверка через docker-compose (порт наружу — `8000`, поднимет вообще всё):
+
+```bash
+docker compose up -d --build
+
+curl http://localhost:8000/health
+curl http://localhost:8000/ready                       # агрегированная готовность всех сервисов
+curl http://localhost:8000/miklats                      # -> miklat-service, как будто напрямую
+curl "http://localhost:8000/route-to-miklat/12362?from_lon=34.78&from_lat=32.08"   # -> miklat-walking-routes
+```
+
