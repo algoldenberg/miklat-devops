@@ -76,18 +76,20 @@ LIMIT 5;
 ### miklat-service
 
 CRUD укрытий, поиск ближайшего укрытия (PostGIS), модерация заявок на новое укрытие
-(`miklat_submissions`). FastAPI + psycopg2 (без ORM), порт `8000` внутри контейнера
-(наружу через docker-compose — `8001`).
+(`miklat_submissions`), приём и модерация жалоб на существующее укрытие
+(`miklat_reports`, SNS-триггер #2 — см. ниже). FastAPI + psycopg2 (без ORM) + boto3,
+порт `8000` внутри контейнера (наружу через docker-compose — `8001`).
 
 Публичные эндпоинты (без авторизации):
 
 | Метод | Путь | Описание |
 |---|---|---|
 | GET | `/health` | liveness, к БД не обращается |
-| GET | `/ready` | readiness, реальный `SELECT 1` в БД |
+| GET | `/ready` | readiness (БД + доступность SNS-топика) |
 | GET | `/miklats` | список (фильтры `city`, `type`, пагинация `limit`/`offset`) |
 | GET | `/miklats/{id}` | одно укрытие |
 | GET | `/miklats/nearest` | ближайшие к точке (`lon`, `lat`, `limit`, `max_distance_m`) |
+| POST | `/miklats/{id}/reports` | пожаловаться на укрытие (`issue_type`: `closed`\|`wrong_address`\|`other`, `comment?`, `contact?`) |
 
 Admin-эндпоинты (заголовок `X-Admin-Key: <ADMIN_API_KEY>`, см. `.env.example`):
 
@@ -99,6 +101,18 @@ Admin-эндпоинты (заголовок `X-Admin-Key: <ADMIN_API_KEY>`, с�
 | GET | `/admin/submissions` | список заявок (фильтр `status`, по умолчанию `pending`) |
 | POST | `/admin/submissions/{id}/approve` | одобрить → создаёт новое укрытие |
 | POST | `/admin/submissions/{id}/reject` | отклонить (обязателен `rejection_reason`) |
+| GET | `/admin/reports` | список жалоб (фильтр `status`, по умолчанию `pending`) |
+| POST | `/admin/reports/{id}/resolve` | отметить жалобу решённой |
+| POST | `/admin/reports/{id}/invalid` | отметить жалобу необоснованной |
+
+Если публикация в SNS не удалась — жалоба (как и заявка/фото в miklat-photos)
+всё равно считается сохранённой; ошибка публикации только логируется на сервере.
+
+**Тот же единственный ручной AWS-шаг**, что описан у `miklat-photos` ниже — один
+SNS topic `miklat-notifications` на оба сервиса (уведомления о фото и о жалобах
+различаются только полем `event` в теле сообщения). Без `SNS_TOPIC_ARN` в
+окружении сервис поднимется нормально, `/report` просто не отправит уведомление,
+`/ready` покажет `"sns":"not configured"`.
 
 Полная интерактивная документация — `/docs` (Swagger UI) после запуска сервиса.
 
@@ -109,11 +123,12 @@ cd services/miklat-service
 python3 -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash; на Linux/macOS: source .venv/bin/activate
 pip install -r requirements-dev.txt
 
-cp .env.example .env   # и поменяйте ADMIN_API_KEY на что-то своё
+cp .env.example .env   # поменяйте ADMIN_API_KEY и заполните AWS_*/SNS_TOPIC_ARN
 export DATABASE_URL="postgresql://miklat:miklat_dev_password@localhost:5432/miklat"
 export ADMIN_API_KEY="dev-secret-123"
+export SNS_TOPIC_ARN="arn:aws:sns:eu-central-1:<account-id>:miklat-notifications"
 
-# юнит-тесты (не требуют БД)
+# тесты — реальная БД, но SNS через monkeypatch (см. tests/test_reports.py)
 python3 -m pytest tests/ -v
 
 # сам сервис
@@ -128,6 +143,10 @@ curl http://localhost:8000/ready
 curl "http://localhost:8000/miklats?limit=3"
 curl "http://localhost:8000/miklats/nearest?lon=34.7818&lat=32.0853&limit=3"
 
+# жалоба на укрытие (публично, без ключа)
+curl -X POST http://localhost:8000/miklats/1/reports -H "Content-Type: application/json" \
+  -d '{"issue_type":"wrong_address","comment":"Координаты указывают на соседний двор"}'
+
 # admin — без ключа должно быть 401
 curl -i -X POST http://localhost:8000/admin/miklats -H "Content-Type: application/json" -d '{"lon":34.78,"lat":32.08}'
 
@@ -135,6 +154,10 @@ curl -i -X POST http://localhost:8000/admin/miklats -H "Content-Type: applicatio
 curl -X POST http://localhost:8000/admin/miklats \
   -H "X-Admin-Key: dev-secret-123" -H "Content-Type: application/json" \
   -d '{"name":"Test Shelter","city":"Tel Aviv","lon":34.78,"lat":32.08,"capacity":10}'
+
+# admin — модерация жалоб
+curl "http://localhost:8000/admin/reports?status=pending" -H "X-Admin-Key: dev-secret-123"
+curl -X POST http://localhost:8000/admin/reports/1/resolve -H "X-Admin-Key: dev-secret-123"
 ```
 
 Через docker-compose (соберёт образ сам, порт наружу — `8001`):
@@ -143,9 +166,6 @@ curl -X POST http://localhost:8000/admin/miklats \
 docker compose up -d --build
 curl http://localhost:8001/health
 ```
-
-Тестов пока минимум (smoke-тест `/health`) — полноценный прогон тестов на каждый коммит
-появится в Фазе 4 (Jenkinsfile-ci).
 
 ### miklat-comments
 
@@ -286,4 +306,100 @@ curl -X POST http://localhost:8003/route-through-miklats \
 Ожидаемо: `distance_m`/`duration_s` — разумные числа для пешехода в этом районе
 Тель-Авива (не нулевые и не астрономические), `geometry` — непустой `LineString`
 вдоль реальных улиц.
+
+### miklat-photos
+
+Загрузка фото существующего укрытия (`miklat_id` должен уже существовать):
+файл → S3 (dev-бакет) → запись в `miklat_photos` (`status='pending'`) →
+SNS-уведомление админу о новом фото на модерации. FastAPI + psycopg2 + boto3,
+порт `8000` внутри контейнера (наружу через docker-compose — `8005`).
+
+Доступ к самим файлам — через **presigned S3 URL** (ссылка с ограниченным
+сроком жизни, по умолчанию 1 час), а не через публичный bucket policy: IAM-
+пользователь приложения по плану имеет только `s3:PutObject`/`s3:GetObject`,
+без анонимного публичного доступа к бакету.
+
+Публичные эндпоинты:
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/health` | liveness |
+| GET | `/ready` | readiness (БД + `head_bucket` на S3) |
+| POST | `/miklats/{miklat_id}/photos` | загрузить фото (`multipart/form-data`, поле `file`; jpeg/png/webp, ≤8 МБ) |
+| GET | `/miklats/{miklat_id}/photos` | список **одобренных** фото (с presigned `url`) |
+
+Admin-эндпоинты (заголовок `X-Admin-Key`):
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/admin/photos?status=pending\|approved\|rejected` | список фото (любой статус, с presigned `url`) |
+| POST | `/admin/photos/{id}/approve` | одобрить — становится видно в публичном списке |
+| POST | `/admin/photos/{id}/reject` | отклонить — остаётся скрыто |
+| DELETE | `/admin/photos/{id}` | удалить запись и сам файл из S3 |
+
+Если публикация в SNS не удалась (топик недоступен, нет прав и т.п.) —
+аплоуд всё равно считается успешным (фото сохранено, статус `pending`),
+ошибка только логируется на сервере: сбой уведомления не должен блокировать
+основную функцию (сохранение фото).
+
+**Единственный ручной AWS-шаг во всём проекте** (см. `miklat-work-plan.md`,
+Фаза 1 шаг 9) — нужно один раз вручную создать dev-ресурсы, прежде чем этот
+сервис сможет реально работать (без них он поднимется и ответит на
+`/health`, но `/ready` и сама загрузка фото будут падать):
+
+1. S3 bucket (например `miklat-photos-dev-<ваш суффикс>`), в том же регионе,
+   что укажете в `AWS_REGION`.
+2. SNS topic `miklat-notifications` + Email Subscription на свою почту
+   (подтвердить подписку по ссылке из письма от AWS).
+3. IAM-пользователь только с правами `s3:PutObject`/`s3:GetObject`/`s3:DeleteObject`
+   на этот бакет и `sns:Publish` на этот topic — access key/secret от него
+   пойдут в `.env`/окружение. (Тот же самый бакет и topic дальше в Фазе 2
+   будут создаваться из Terraform кодом — это разовый dev-шаг, не замена.)
+
+Локальный запуск:
+
+```bash
+cd services/miklat-photos
+python3 -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash; на Linux/macOS: source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+cp .env.example .env   # заполнить AWS_* реальными dev-значениями (см. выше)
+export DATABASE_URL="postgresql://miklat:miklat_dev_password@localhost:5432/miklat"
+export ADMIN_API_KEY="dev-secret-123"
+export AWS_REGION="eu-central-1"
+export AWS_ACCESS_KEY_ID="..."
+export AWS_SECRET_ACCESS_KEY="..."
+export S3_BUCKET_NAME="miklat-photos-dev-..."
+export SNS_TOPIC_ARN="arn:aws:sns:eu-central-1:<account-id>:miklat-notifications"
+
+# юнит/функциональные тесты — реальная БД, но S3/SNS через monkeypatch
+# (в песочнице/CI без реального AWS-доступа не запускаем настоящие вызовы)
+python3 -m pytest tests/ -v
+
+uvicorn app.main:app --reload --port 8000
+```
+
+Проверка вручную (нужны реальные AWS-креды в окружении):
+
+```bash
+curl http://localhost:8000/ready   # {"status":"ok","database":"up","s3":"up"}
+
+curl -X POST http://localhost:8000/miklats/1/photos -F "file=@/path/to/photo.jpg"
+
+curl http://localhost:8000/miklats/1/photos   # пока пусто — фото ещё pending
+
+# админ одобряет
+curl -X POST http://localhost:8000/admin/photos/1/approve -H "X-Admin-Key: dev-secret-123"
+
+curl http://localhost:8000/miklats/1/photos   # теперь фото видно, с presigned url
+```
+
+Через docker-compose (порт наружу — `8005`; создайте `.env` в корне
+репозитория с `AWS_*`/`S3_BUCKET_NAME`/`SNS_TOPIC_ARN` — docker-compose
+подхватит его автоматически, `.env` в `.gitignore`):
+
+```bash
+docker compose up -d --build
+curl http://localhost:8005/ready
+```
 

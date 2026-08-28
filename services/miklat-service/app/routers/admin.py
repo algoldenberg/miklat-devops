@@ -14,6 +14,7 @@ from app.schemas import (
     MiklatCreate,
     MiklatOut,
     MiklatUpdate,
+    ReportOut,
     SubmissionApprove,
     SubmissionOut,
     SubmissionReject,
@@ -60,3 +61,24 @@ def reject_submission(submission_id: int, body: SubmissionReject):
     return crud.reject_submission(
         submission_id, reviewed_by=body.reviewed_by or "admin", rejection_reason=body.rejection_reason
     )
+
+
+# ---------- reports moderation ----------
+
+@router.get("/reports", response_model=list[ReportOut])
+def list_reports(
+    status: Optional[str] = Query(default="pending"),
+    limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
+    offset: int = Query(default=0, ge=0),
+):
+    return crud.list_reports(status_filter=status, limit=limit, offset=offset)
+
+
+@router.post("/reports/{report_id}/resolve", response_model=ReportOut)
+def resolve_report(report_id: int):
+    return crud.set_report_status(report_id, "resolved")
+
+
+@router.post("/reports/{report_id}/invalid", response_model=ReportOut)
+def invalidate_report(report_id: int):
+    return crud.set_report_status(report_id, "invalid")

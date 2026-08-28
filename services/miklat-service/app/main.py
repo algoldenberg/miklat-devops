@@ -1,10 +1,15 @@
+import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app import aws_client
+from app.config import SNS_TOPIC_ARN
 from app.database import check_connection, close_pool, init_pool
-from app.routers import admin, miklats
+from app.routers import admin, miklats, reports
 from app.schemas import HealthOut, ReadyOut
+
+logger = logging.getLogger("miklat-service")
 
 
 @asynccontextmanager
@@ -22,6 +27,7 @@ app = FastAPI(
 )
 
 app.include_router(miklats.router)
+app.include_router(reports.router)
 app.include_router(admin.router)
 
 
@@ -33,6 +39,17 @@ def health():
 
 @app.get("/ready", response_model=ReadyOut, tags=["meta"])
 def ready():
-    """Readiness — реальная проверка соединения с БД (для k8s readinessProbe)."""
+    """Readiness — реальная проверка БД + доступности SNS-топика (для k8s readinessProbe)."""
     db_ok = check_connection()
-    return {"status": "ok" if db_ok else "degraded", "database": "up" if db_ok else "down"}
+
+    if not SNS_TOPIC_ARN:
+        sns_status = "not configured"
+    else:
+        sns_status = "up" if aws_client.check_topic_reachable(SNS_TOPIC_ARN) else "down"
+
+    overall_ok = db_ok and sns_status == "up"
+    return {
+        "status": "ok" if overall_ok else "degraded",
+        "database": "up" if db_ok else "down",
+        "sns": sns_status,
+    }

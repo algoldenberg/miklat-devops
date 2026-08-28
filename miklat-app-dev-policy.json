@@ -1,0 +1,29 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "PhotosBucketAccess",
+      "Effect": "Allow",
+      "Action": ["s3:PutObject", "s3:GetObject", "s3:DeleteObject"],
+      "Resource": "arn:aws:s3:::miklat-photos-dev-232779827681/*"
+    },
+    {
+      "Sid": "PhotosBucketReadinessCheck",
+      "Effect": "Allow",
+      "Action": "s3:ListBucket",
+      "Resource": "arn:aws:s3:::miklat-photos-dev-232779827681"
+    },
+    {
+      "Sid": "NotificationsPublish",
+      "Effect": "Allow",
+      "Action": "sns:Publish",
+      "Resource": "arn:aws:sns:il-central-1:232779827681:miklat-notifications"
+    },
+    {
+      "Sid": "NotificationsReadinessCheck",
+      "Effect": "Allow",
+      "Action": "sns:GetTopicAttributes",
+      "Resource": "arn:aws:sns:il-central-1:232779827681:miklat-notifications"
+    }
+  ]
+}

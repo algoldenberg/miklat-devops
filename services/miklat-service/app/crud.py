@@ -3,11 +3,16 @@
 GEOGRAPHY(Point,4326); наружу отдаём lon/lat через ST_X/ST_Y(geom::geometry).
 """
 
+import logging
 from typing import Optional
 
 from fastapi import HTTPException, status
 
+from app import aws_client
+from app.config import SNS_TOPIC_ARN
 from app.database import get_cursor
+
+logger = logging.getLogger("miklat-service.crud")
 
 _MIKLAT_COLUMNS = """
     id, name, address, city, capacity, accessible,
@@ -256,3 +261,74 @@ def reject_submission(submission_id: int, reviewed_by: str, rejection_reason: st
             [reviewed_by, rejection_reason, submission_id],
         )
         return cur.fetchone()
+
+
+# ---------- miklat_reports: жалобы (публичное создание + admin-модерация) ----------
+# SNS-триггер #2 (см. app/aws_client.py). Порядок операций тот же принцип,
+# что в miklat-photos/app/crud.py::create_photo: сначала проверка/запись в
+# БД, публикация в SNS — уже потом и best-effort (сбой уведомления не должен
+# ронять сохранение самой жалобы).
+
+_REPORT_COLUMNS = "id, miklat_id, issue_type, comment, contact, status, reported_at, reviewed_at"
+
+
+def create_report(miklat_id: int, data, reporter_ip: Optional[str]) -> dict:
+    with get_cursor(commit=True) as cur:
+        cur.execute("SELECT 1 FROM miklats WHERE id = %s;", [miklat_id])
+        if cur.fetchone() is None:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Miklat not found")
+
+        cur.execute(
+            f"""
+            INSERT INTO miklat_reports (miklat_id, issue_type, comment, contact, reporter_ip, status)
+            VALUES (%s, %s, %s, %s, %s, 'pending')
+            RETURNING {_REPORT_COLUMNS};
+            """,
+            [miklat_id, data.issue_type, data.comment, data.contact, reporter_ip],
+        )
+        report = cur.fetchone()
+
+    try:
+        aws_client.publish_report_notification(SNS_TOPIC_ARN, report)
+    except Exception as exc:  # noqa: BLE001 - best-effort, см. docstring выше
+        logger.warning("SNS publish failed for report_id=%s: %s", report["id"], exc)
+
+    return report
+
+
+def list_reports(status_filter: Optional[str], limit: int, offset: int) -> list[dict]:
+    conditions = []
+    params: list = []
+    if status_filter:
+        conditions.append("status = %s")
+        params.append(status_filter)
+
+    where_clause = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+    query = f"""
+        SELECT {_REPORT_COLUMNS}
+        FROM miklat_reports
+        {where_clause}
+        ORDER BY reported_at DESC
+        LIMIT %s OFFSET %s;
+    """
+    params.extend([limit, offset])
+    with get_cursor() as cur:
+        cur.execute(query, params)
+        return cur.fetchall()
+
+
+def set_report_status(report_id: int, new_status: str) -> dict:
+    with get_cursor(commit=True) as cur:
+        cur.execute(
+            f"""
+            UPDATE miklat_reports
+            SET status = %s, reviewed_at = now()
+            WHERE id = %s
+            RETURNING {_REPORT_COLUMNS};
+            """,
+            [new_status, report_id],
+        )
+        row = cur.fetchone()
+    if row is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Report not found")
+    return row

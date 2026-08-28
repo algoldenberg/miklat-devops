@@ -18,6 +18,10 @@ services:
       timeout: 5s
       retries: 10
 
+  # SNS-переменные — тот же dev-топик, что и у miklat-photos (см. его
+  # комментарий ниже и README). Без них сервис поднимется нормально,
+  # /report просто не отправит уведомление (жалоба всё равно сохранится),
+  # а /ready покажет "sns":"not configured"/"down".
   miklat-service:
     build: ./services/miklat-service
     container_name: miklat-service
@@ -25,6 +29,10 @@ services:
     environment:
       DATABASE_URL: postgresql://miklat:miklat_dev_password@postgres:5432/miklat
       ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-only-change-me}
+      AWS_REGION: ${AWS_REGION:-eu-central-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      SNS_TOPIC_ARN: ${SNS_TOPIC_ARN:-}
     ports:
       - "8001:8000"
     depends_on:
@@ -93,6 +101,31 @@ services:
       postgres:
         condition: service_healthy
       osrm:
+        condition: service_healthy
+
+  # Требует разово созданный вручную dev S3 bucket + SNS topic (см.
+  # README / miklat-work-plan.md, Фаза 1 шаг 9) — без реальных
+  # AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY/S3_BUCKET_NAME/SNS_TOPIC_ARN
+  # сервис всё равно поднимется и ответит на /health, но /ready и сама
+  # заливка фото будут падать. Значения передаются либо через реальные
+  # переменные окружения шелла, либо через файл `.env` в корне репозитория
+  # (docker-compose подхватывает его автоматически; `.env` в .gitignore).
+  miklat-photos:
+    build: ./services/miklat-photos
+    container_name: miklat-photos
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgresql://miklat:miklat_dev_password@postgres:5432/miklat
+      ADMIN_API_KEY: ${ADMIN_API_KEY:-dev-only-change-me}
+      AWS_REGION: ${AWS_REGION:-eu-central-1}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      S3_BUCKET_NAME: ${S3_BUCKET_NAME:-}
+      SNS_TOPIC_ARN: ${SNS_TOPIC_ARN:-}
+    ports:
+      - "8005:8000"
+    depends_on:
+      postgres:
         condition: service_healthy
 
 volumes:

@@ -17,6 +17,14 @@ DATABASE_URL: str = os.environ.get(
 # должны быть недоступны (см. app/auth.py), а не открыты по пустому ключу.
 ADMIN_API_KEY: str = os.environ.get("ADMIN_API_KEY", "")
 
+# SNS-триггер #2 (жалоба на укрытие) — тот же Topic "miklat-notifications",
+# что и в miklat-photos (см. work-plan, Фаза 1 шаг 9 — разовая ручная
+# настройка dev S3/SNS). Пустое значение по умолчанию: без него /report
+# просто не сможет опубликовать уведомление (жалоба всё равно сохранится в
+# БД — см. app/crud.py, публикация в SNS обёрнута как best-effort).
+AWS_REGION: str = os.environ.get("AWS_REGION", "eu-central-1")
+SNS_TOPIC_ARN: str = os.environ.get("SNS_TOPIC_ARN", "")
+
 DEFAULT_LIST_LIMIT = 50
 MAX_LIST_LIMIT = 200
 

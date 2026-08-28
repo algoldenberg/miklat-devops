@@ -83,6 +83,26 @@ class SubmissionReject(BaseModel):
     rejection_reason: str = Field(..., min_length=1)
 
 
+# ---------- miklat_reports (жалобы, SNS-триггер #2) ----------
+
+class ReportOut(BaseModel):
+    id: int
+    miklat_id: int
+    issue_type: str
+    comment: Optional[str] = None
+    contact: Optional[str] = None
+    status: str
+    reported_at: datetime
+    reviewed_at: Optional[datetime] = None
+
+
+class ReportCreate(BaseModel):
+    # Реальные значения из прод-данных (см. db/001_init.sql) — closed, wrong_address, other.
+    issue_type: str = Field(..., min_length=1, max_length=50)
+    comment: Optional[str] = Field(default=None, max_length=2000)
+    contact: Optional[str] = Field(default=None, max_length=200)
+
+
 class HealthOut(BaseModel):
     status: str
 
@@ -90,3 +110,4 @@ class HealthOut(BaseModel):
 class ReadyOut(BaseModel):
     status: str
     database: str
+    sns: str
