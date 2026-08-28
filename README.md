@@ -207,3 +207,83 @@ docker compose up -d --build
 curl http://localhost:8002/health
 ```
 
+### OSRM + miklat-routes / miklat-walking-routes
+
+Пеший маршрутизатор (OSRM, только профиль `foot` — см. `osrm/README.md` про то,
+почему не `car`). Два сервиса дёргают один и тот же контейнер `osrm` по HTTP:
+
+- **miklat-walking-routes** — маршрут от точки пользователя до одного укрытия
+  (основной сценарий приложения).
+- **miklat-routes** — маршрут через несколько укрытий по списку `miklat_id`,
+  в заданном порядке (без оптимизации порядка — TSP не решаем).
+
+**Важно:** прежде чем поднимать эти сервисы, один раз подготовьте данные OSRM
+(скачивание карты + построение графа, несколько минут):
+
+```bash
+bash osrm/prepare-data.sh
+```
+
+Подробности — `osrm/README.md`. Без этого шага контейнер `osrm` не запустится
+(нет файлов графа), и оба сервиса маршрутов будут в состоянии `degraded`
+(`/ready` покажет `"osrm":"down"`).
+
+#### miklat-walking-routes
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/health` / `/ready` | liveness / readiness (БД + OSRM) |
+| POST | `/route` | маршрут между двумя точками: `{"from":{"lon","lat"},"to":{"lon","lat"}}` |
+| GET | `/route-to-miklat/{id}?from_lon=&from_lat=` | маршрут от пользователя до укрытия по его id |
+
+#### miklat-routes
+
+| Метод | Путь | Описание |
+|---|---|---|
+| GET | `/health` / `/ready` | liveness / readiness (БД + OSRM) |
+| POST | `/route` | маршрут по произвольным точкам: `{"waypoints":[{"lon","lat"},...]}` (2–15) |
+| POST | `/route-through-miklats` | `{"miklat_ids":[...],"start":{"lon","lat"}?}` — маршрут через укрытия по id |
+
+Оба сервиса отвечают `{distance_m, duration_s, geometry (GeoJSON LineString), profile:"foot"}`
+(`miklat-routes` — ещё `legs` с разбивкой по перегонам и `total_*` вместо голых
+`distance_m`/`duration_s`).
+
+Локальный запуск (аналогично предыдущим сервисам; нужен и Postgres, и OSRM):
+
+```bash
+cd services/miklat-walking-routes   # или services/miklat-routes
+python3 -m venv .venv && source .venv/Scripts/activate   # Windows Git Bash; на Linux/macOS: source .venv/bin/activate
+pip install -r requirements-dev.txt
+
+cp .env.example .env
+export DATABASE_URL="postgresql://miklat:miklat_dev_password@localhost:5432/miklat"
+export OSRM_BASE_URL="http://localhost:5001"
+
+# юнит-тесты бизнес-логики — с "заглушкой" OSRM, реальный OSRM не нужен
+python3 -m pytest tests/ -v
+
+uvicorn app.main:app --reload --port 8000
+```
+
+Проверка через docker-compose (поднимет всё сразу — Postgres, OSRM, все сервисы):
+
+```bash
+docker compose up -d --build
+
+curl http://localhost:8004/ready   # miklat-walking-routes
+curl http://localhost:8003/ready   # miklat-routes
+
+# пеший маршрут до конкретного укрытия (id и координаты подставьте свои,
+# например id=12362 "Kindergarden Mamads" из seed-данных, координаты рядом)
+curl "http://localhost:8004/route-to-miklat/12362?from_lon=34.78&from_lat=32.08"
+
+# маршрут через несколько укрытий
+curl -X POST http://localhost:8003/route-through-miklats \
+  -H "Content-Type: application/json" \
+  -d '{"miklat_ids":[12362,1],"start":{"lon":34.78,"lat":32.08}}'
+```
+
+Ожидаемо: `distance_m`/`duration_s` — разумные числа для пешехода в этом районе
+Тель-Авива (не нулевые и не астрономические), `geometry` — непустой `LineString`
+вдоль реальных улиц.
+

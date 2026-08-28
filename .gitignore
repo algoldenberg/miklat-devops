@@ -6,6 +6,10 @@ __pycache__/
 venv/
 .pytest_cache/
 
+# OSRM (сгенерированные данные — карта + предобработанный граф, воспроизводится
+# скриптом osrm/prepare-data.sh, в git не нужны)
+osrm/data/
+
 # Node / frontend
 node_modules/
 frontend/dist/
