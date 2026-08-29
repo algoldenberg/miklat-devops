@@ -525,3 +525,91 @@ docker compose up -d --build
 долететь до самой карты — исправлено скрытием модалки на время выбора точки
 (остаётся только баннер-подсказка поверх карты).
 
+## Инфраструктура: Terraform (Задание 2)
+
+Весь код — в `terraform/`. Поднимает в AWS (регион `il-central-1`, тот же
+аккаунт, что и ручной dev-S3/SNS из Фазы 1) сеть, 3 EC2-инстанса, RDS
+PostgreSQL, S3-бакет для фото и SNS-топик уведомлений — с нуля, без единого
+ручного шага в AWS-консоли.
+
+### Файлы и что каждый создаёт
+
+| Файл | Что содержит |
+|---|---|
+| `versions.tf` | Версии Terraform (`>= 1.5.0`) и провайдера AWS (`~> 5.0`) |
+| `providers.tf` | Провайдер `aws` (регион/профиль из переменных), `data.aws_caller_identity` |
+| `backend.tf` | Backend состояния — **local** (см. "State" ниже) |
+| `variables.tf` | Все переменные окружения/аккаунта |
+| `network.tf` | VPC, 2 публичные подсети (разные AZ), Internet Gateway, route table, `aws_db_subnet_group` |
+| `security_groups.tf` | 4 security group — `frontend`/`backend`/`worker`/`rds`, минимальные правила (см. ниже) |
+| `ec2.tf` | 3 инстанса (`frontend`/`backend`/`worker`), Key Pair из уже существующего публичного ключа, AMI Amazon Linux 2023 через SSM-параметр |
+| `iam.tf` | IAM Role + инстанс-профиль для backend/worker (доступ к S3/SNS без статических ключей) |
+| `rds.tf` | RDS PostgreSQL 16, `publicly_accessible = false`, `skip_final_snapshot = true` |
+| `s3.tf` | S3-бакет для фото, публичный доступ полностью заблокирован, шифрование по умолчанию |
+| `sns.tf` | SNS-топик уведомлений + email-подписка |
+| `outputs.tf` | IP серверов, RDS endpoint, имя бакета, ARN топика — то, что дальше нужно Ansible |
+| `terraform.tfvars.example` | Шаблон переменных без реальных значений (реальный `terraform.tfvars` — только локально, в `.gitignore`) |
+
+### Ключевые решения
+
+- **Деление на 3 роли** (frontend/backend/worker) — то же самое, что задаёт план и структура Ansible-плейбуков:
+  frontend = nginx + статика; backend = `miklat-gateway` + `miklat-service` + `miklat-comments`; worker =
+  `miklat-routes` + `miklat-walking-routes` + `miklat-photos` + OSRM. Security group каждой роли пускает
+  только то, что реально нужно (frontend → 80/443 из интернета; backend → 8000 только от frontend; worker →
+  8003/8004/8005 только от backend; RDS → 5432 только от backend и worker). SSH везде — только с одного
+  доверенного IP (`var.ssh_allowed_cidr`, без дефолта, `0.0.0.0/0` для SSH недопустим).
+- **Без NAT Gateway / приватных подсетей** — все три EC2 в публичных подсетях (дешевле и проще для
+  однослойного учебного стенда), но реальная изоляция всё равно есть — через security groups и через
+  `publicly_accessible = false` у RDS, а не через "подсеть без интернета".
+- **State — локальный backend**, не S3+DynamoDB: проект соло, конкурентной записи в state нет, а поднимать
+  отдельный бакет+таблицу только ради самого Terraform — лишняя инфраструктура. `terraform.tfstate`
+  никогда не коммитится (в нём в открытом виде пароль RDS).
+- **Доступ приложения к S3/SNS — через IAM Role + instance profile** на backend/worker (не статический
+  IAM-пользователь с access key, как в ручном dev-варианте из Фазы 1) — AWS сам подставляет и ротирует
+  временные credentials через instance metadata, ничего секретного не попадает ни в `.env`, ни в Ansible.
+- **S3-бакет и SNS-топик — отдельные от ручных dev-ресурсов Фазы 1** (суффикс `-tf` в имени) — тот, ручной
+  (`miklat-photos-dev-<account_id>` и топик `miklat-notifications`), остаётся и продолжает обслуживать
+  локальную разработку через docker-compose; эти, новые — то, чем реально пользуется стенд на EC2.
+- **`.terraform.lock.hcl` коммитится** (в отличие от того, что было изначально в `.gitignore` ещё с Фазы 0,
+  до появления самого Terraform-кода) — фиксирует конкретную версию и хэши провайдера ради воспроизводимости.
+
+### Как запустить
+
+Понадобится: AWS CLI с настроенными credentials (тот же аккаунт/профиль, что и в Фазе 1), Terraform ≥ 1.5,
+и SSH-ключ (публичный — Terraform загрузит его в AWS, приватный остаётся только у тебя):
+
+```bash
+# если пары ещё нет:
+ssh-keygen -t ed25519 -f ~/.ssh/miklat-devops -C "miklat-devops"
+
+cd terraform
+cp terraform.tfvars.example terraform.tfvars
+# отредактировать terraform.tfvars: ssh_allowed_cidr (свой внешний IP + /32),
+# ssh_public_key_path, db_password, при необходимости aws_profile
+
+terraform init
+terraform plan    # проверить, что именно будет создано, ПЕРЕД apply
+terraform apply
+```
+
+После `apply` — `terraform output` покажет IP всех трёх серверов, RDS endpoint, имя S3-бакета и ARN SNS-топика
+(нужны следующему шагу — Ansible). Email-подписку SNS нужно подтвердить по ссылке из письма (тот же ручной
+шаг, что и в Фазе 1, — Terraform не может кликнуть за тебя).
+
+Удаление всего созданного:
+
+```bash
+terraform destroy
+```
+
+### Проверено
+
+`terraform fmt`, `terraform init` и `terraform validate` прогнаны в песочнице Claude — конфигурация
+синтаксически корректна, все ссылки между ресурсами резолвятся. `terraform plan` с заведомо фиктивными AWS
+credentials дошёл до самого последнего шага (реальный вызов `sts:GetCallerIdentity` для проверки
+identity) и корректно упал именно там с `InvalidClientTokenId` — то есть все переменные, файлы (включая
+чтение публичного SSH-ключа) и весь граф ресурсов уже отрезолвились без ошибок, и единственное, чего не
+хватает для реального `plan`/`apply`, — настоящих AWS-credentials, которых в изолированной песочнице
+Claude нет и быть не может. Реальный `terraform init/plan/apply` на настоящем аккаунте — следующий шаг,
+выполняется пользователем со своей машины (см. рабочее соглашение по git/AWS-доступу в `miklat-progress.md`).
+

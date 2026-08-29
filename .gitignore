@@ -27,9 +27,12 @@ frontend/dist/
 terraform/.terraform/
 terraform/*.tfstate
 terraform/*.tfstate.*
-terraform/.terraform.lock.hcl
 terraform/*.tfvars
 !terraform/*.tfvars.example
+# .terraform.lock.hcl НЕ игнорируется (было ошибочно исключено ещё в Фазе 0,
+# до появления самого Terraform-кода) — этот файл наоборот нужно коммитить:
+# он фиксирует конкретную версию+хэши провайдера, чтобы `terraform init` был
+# воспроизводим на любой машине, а не просто "последняя версия ~> 5.0".
 
 # Ansible
 ansible/*.retry
