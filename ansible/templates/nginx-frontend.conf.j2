@@ -1,0 +1,22 @@
+{# nginx на "настоящей" EC2 (не non-root контейнер, как в docker-compose) —
+   поэтому без плясок вокруг pid/порта 8080 из Фазы 1: слушаем сразу 80,
+   nginx этого пакета уже запускается от root (master process) как обычно. #}
+server {
+    listen 80;
+    server_name _;
+
+    root {{ app_base_dir }}/frontend/dist;
+    index index.html;
+
+    location /api/ {
+        proxy_pass http://{{ backend_private_ip }}:{{ miklat_gateway_port }}/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    location / {
+        try_files $uri $uri/ /index.html;
+    }
+}

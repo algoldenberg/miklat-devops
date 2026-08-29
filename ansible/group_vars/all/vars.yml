@@ -1,0 +1,22 @@
+# Несекретные, не завязанные на конкретный AWS-аккаунт настройки — этот файл
+# коммитится как есть. Всё, что зависит от аккаунта/конкретного terraform
+# apply (пароли, ARN, IP), лежит отдельно в secrets.yml (см.
+# secrets.yml.example рядом, сам secrets.yml — в .gitignore).
+
+app_user: miklat
+app_base_dir: /opt/miklat
+
+# Порты — те же номера, что и в docker-compose.yml (Фаза 1), просто теперь
+# каждый сервис слушает свой порт напрямую на хосте, а не через
+# docker-compose port mapping.
+miklat_service_port: 8001
+miklat_comments_port: 8002
+miklat_routes_port: 8003
+miklat_walking_routes_port: 8004
+miklat_photos_port: 8005
+miklat_gateway_port: 8000
+osrm_port: 5000
+
+db_port: 5432
+db_name: miklat
+db_user: miklat_admin

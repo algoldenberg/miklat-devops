@@ -1,0 +1,23 @@
+{# OSRM как systemd-юнит поверх `docker run` — не через ansible
+   docker_container/community.docker (не хотим тянуть Docker SDK for Python
+   на хост, а собственно docker CLI хватает); ExecStartPre чистит зависший
+   контейнер с прошлого запуска, чтобы restart был идемпотентным. #}
+[Unit]
+Description=OSRM routing engine (miklat-devops)
+After=docker.service network.target
+Requires=docker.service
+
+[Service]
+Type=simple
+ExecStartPre=-/usr/bin/docker rm -f miklat-osrm
+ExecStart=/usr/bin/docker run --rm --name miklat-osrm \
+    -p 127.0.0.1:{{ osrm_port }}:5000 \
+    -v {{ app_base_dir }}/osrm/data:/data:ro \
+    ghcr.io/project-osrm/osrm-backend \
+    osrm-routed --algorithm mld /data/israel-and-palestine-latest.osrm
+ExecStop=/usr/bin/docker stop miklat-osrm
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

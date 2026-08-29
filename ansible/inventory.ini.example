@@ -1,0 +1,28 @@
+; Скопировать в inventory.ini (реальный файл в git не попадает — см.
+; .gitignore) и подставить значения из `terraform output` (папка terraform/).
+; IP-адреса публичные — только для того, чтобы Ansible смог зайти по SSH;
+; сами сервисы друг с другом внутри VPC общаются по приватным IP (см.
+; group_vars/all/secrets.yml.example — backend_private_ip/worker_private_ip).
+;
+; Хосты названы прямо IP-адресами (а не алиасами вроде "frontend") — иначе
+; ansible ругается предупреждением "Found both group and host with same
+; name" (группа и единственный хост в ней называются одинаково).
+
+[frontend]
+FRONTEND_PUBLIC_IP
+
+[backend]
+BACKEND_PUBLIC_IP
+
+[worker]
+WORKER_PUBLIC_IP
+
+[miklat_app:children]
+frontend
+backend
+worker
+
+[miklat_app:vars]
+ansible_user=ec2-user
+ansible_ssh_private_key_file=~/.ssh/miklat-devops
+ansible_python_interpreter=/usr/bin/python3

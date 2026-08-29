@@ -1,0 +1,19 @@
+{# Общий шаблон systemd-юнита для python/uvicorn-сервисов (miklat-service,
+   miklat-comments, miklat-gateway, miklat-routes, miklat-walking-routes,
+   miklat-photos) — параметризован через item.name/item.port из плейбука. #}
+[Unit]
+Description={{ item.name }} (miklat-devops)
+After=network.target
+
+[Service]
+Type=simple
+User={{ app_user }}
+Group={{ app_user }}
+WorkingDirectory={{ app_base_dir }}/{{ item.name }}
+EnvironmentFile={{ app_base_dir }}/{{ item.name }}/.env
+ExecStart={{ app_base_dir }}/{{ item.name }}/venv/bin/uvicorn app.main:app --host 0.0.0.0 --port {{ item.port }}
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

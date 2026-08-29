@@ -1,0 +1,9 @@
+{# miklat-service/miklat-comments живут на ЭТОМ ЖЕ хосте (backend) —
+   обращаемся по 127.0.0.1, не по приватному IP. Три worker-сервиса — на
+   отдельном хосте, туда по приватному IP (тот же принцип, что и в
+   docker-compose, только вместо DNS-имён контейнеров — реальные адреса). #}
+MIKLAT_SERVICE_URL=http://127.0.0.1:{{ miklat_service_port }}
+MIKLAT_COMMENTS_URL=http://127.0.0.1:{{ miklat_comments_port }}
+MIKLAT_ROUTES_URL=http://{{ worker_private_ip }}:{{ miklat_routes_port }}
+MIKLAT_WALKING_ROUTES_URL=http://{{ worker_private_ip }}:{{ miklat_walking_routes_port }}
+MIKLAT_PHOTOS_URL=http://{{ worker_private_ip }}:{{ miklat_photos_port }}

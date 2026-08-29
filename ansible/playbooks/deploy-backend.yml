@@ -1,0 +1,97 @@
+# Backend: miklat-gateway + miklat-service + miklat-comments — три python/
+# uvicorn-сервиса на одном хосте (см. обоснование деления в
+# terraform/security_groups.tf). Gateway обращается к соседям по 127.0.0.1
+# (см. templates/env-miklat-gateway.j2), к worker — по приватному IP.
+
+- name: Backend — gateway + service + comments
+  hosts: backend
+  become: true
+
+  vars:
+    backend_services:
+      - name: miklat-service
+        port: "{{ miklat_service_port }}"
+      - name: miklat-comments
+        port: "{{ miklat_comments_port }}"
+      - name: miklat-gateway
+        port: "{{ miklat_gateway_port }}"
+
+  tasks:
+    - name: Перенести исходники сервисов на сервер
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../services/{{ item.name }}/"
+        dest: "{{ app_base_dir }}/{{ item.name }}/"
+        rsync_opts:
+          - "--exclude=venv"
+          - "--exclude=__pycache__"
+          - "--exclude=.pytest_cache"
+          - "--exclude=tests"
+      # Без delegate_to — см. пояснение в nginx.yml: synchronize по умолчанию
+      # уже читает src на control node и пишет dest на удалённый хост из
+      # hosts: этого play; delegate_to: inventory_hostname уводит всю команду
+      # (в т.ч. чтение src) по SSH на сам EC2, где src не существует.
+      loop: "{{ backend_services }}"
+
+    - name: >-
+        Установить Python 3.12 (дефолтный python3 на AL2023 — версия 3.9;
+        код сервисов использует синтаксис аннотаций "X | None", появившийся
+        только в Python 3.10+ — на 3.9 это TypeError уже при импорте модуля.
+        3.12 выбран, чтобы совпадать с версией из Dockerfile сервисов (Фаза 1))
+      ansible.builtin.dnf:
+        name: python3.12
+        state: present
+
+    - name: >-
+        Удалить venv, если он уже был создан под неподходящий python3.9
+        (повторный прогон после фикса версии Python)
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/{{ item.name }}/venv"
+        state: absent
+      loop: "{{ backend_services }}"
+
+    - name: Создать venv (на Python 3.12) и поставить зависимости
+      ansible.builtin.pip:
+        requirements: "{{ app_base_dir }}/{{ item.name }}/requirements.txt"
+        virtualenv: "{{ app_base_dir }}/{{ item.name }}/venv"
+        virtualenv_command: python3.12 -m venv
+      loop: "{{ backend_services }}"
+
+    - name: Владелец файлов сервисов — app_user
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/{{ item.name }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        recurse: true
+      loop: "{{ backend_services }}"
+
+    - name: Сгенерировать .env для каждого сервиса
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/env-{{ item.name }}.j2"
+        dest: "{{ app_base_dir }}/{{ item.name }}/.env"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0600"
+      loop: "{{ backend_services }}"
+
+    - name: Установить systemd-юнит для каждого сервиса
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/systemd-service.j2"
+        dest: "/etc/systemd/system/{{ item.name }}.service"
+        mode: "0644"
+      loop: "{{ backend_services }}"
+      notify: Перечитать systemd
+
+    - name: Перечитать systemd сразу (если юниты менялись), затем запустить сервисы
+      ansible.builtin.meta: flush_handlers
+
+    - name: Включить и (пере)запустить сервисы
+      ansible.builtin.systemd:
+        name: "{{ item.name }}"
+        enabled: true
+        state: restarted
+      loop: "{{ backend_services }}"
+
+  handlers:
+    - name: Перечитать systemd
+      ansible.builtin.systemd:
+        daemon_reload: true

@@ -36,6 +36,8 @@ terraform/*.tfvars
 
 # Ansible
 ansible/*.retry
+ansible/inventory.ini
+ansible/group_vars/all/secrets.yml
 ansible/group_vars/vault.yml
 
 # Kubernetes secrets (real ones must never be committed)

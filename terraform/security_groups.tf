@@ -15,8 +15,12 @@
 # DNS-имён контейнеров).
 
 resource "aws_security_group" "frontend" {
-  name        = "${var.project_name}-frontend-sg"
-  description = "HTTP/HTTPS из интернета на frontend (nginx), SSH только с доверенного IP"
+  name = "${var.project_name}-frontend-sg"
+  # Описания (description) у SG и у ingress/egress-правил AWS принимает
+  # только ASCII (регулярка на стороне API не пропускает кириллицу) — здесь
+  # и ниже по файлу они на английском, а объяснения по-русски остаются в
+  # обычных комментариях (#).
+  description = "HTTP/HTTPS from internet to frontend (nginx), SSH only from trusted IP"
   vpc_id      = aws_vpc.main.id
 
   ingress {
@@ -36,7 +40,7 @@ resource "aws_security_group" "frontend" {
   }
 
   ingress {
-    description = "SSH (только доверенный IP)"
+    description = "SSH (trusted IP only)"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -57,11 +61,11 @@ resource "aws_security_group" "frontend" {
 
 resource "aws_security_group" "backend" {
   name        = "${var.project_name}-backend-sg"
-  description = "gateway/service/comments — доступ только от frontend (и друг друга), SSH только с доверенного IP"
+  description = "gateway/service/comments - access only from frontend, SSH only from trusted IP"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "miklat-gateway (8000) — только от frontend"
+    description     = "miklat-gateway (8000) - from frontend only"
     from_port       = 8000
     to_port         = 8000
     protocol        = "tcp"
@@ -69,7 +73,7 @@ resource "aws_security_group" "backend" {
   }
 
   ingress {
-    description = "SSH (только доверенный IP)"
+    description = "SSH (trusted IP only)"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -90,11 +94,11 @@ resource "aws_security_group" "backend" {
 
 resource "aws_security_group" "worker" {
   name        = "${var.project_name}-worker-sg"
-  description = "routes/walking-routes/photos + OSRM — доступ только от backend (gateway туда проксирует), SSH только с доверенного IP"
+  description = "routes/walking-routes/photos + OSRM - access only from backend, SSH only from trusted IP"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "miklat-routes (8003) — только от backend"
+    description     = "miklat-routes (8003) - from backend only"
     from_port       = 8003
     to_port         = 8003
     protocol        = "tcp"
@@ -102,7 +106,7 @@ resource "aws_security_group" "worker" {
   }
 
   ingress {
-    description     = "miklat-walking-routes (8004) — только от backend"
+    description     = "miklat-walking-routes (8004) - from backend only"
     from_port       = 8004
     to_port         = 8004
     protocol        = "tcp"
@@ -110,7 +114,7 @@ resource "aws_security_group" "worker" {
   }
 
   ingress {
-    description     = "miklat-photos (8005) — только от backend"
+    description     = "miklat-photos (8005) - from backend only"
     from_port       = 8005
     to_port         = 8005
     protocol        = "tcp"
@@ -118,7 +122,7 @@ resource "aws_security_group" "worker" {
   }
 
   ingress {
-    description = "SSH (только доверенный IP)"
+    description = "SSH (trusted IP only)"
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
@@ -145,11 +149,11 @@ resource "aws_security_group" "worker" {
 
 resource "aws_security_group" "rds" {
   name        = "${var.project_name}-rds-sg"
-  description = "PostgreSQL — доступ только от backend и worker, никогда из интернета"
+  description = "PostgreSQL - access only from backend and worker, never from the internet"
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description     = "PostgreSQL от backend"
+    description     = "PostgreSQL from backend"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"
@@ -157,7 +161,7 @@ resource "aws_security_group" "rds" {
   }
 
   ingress {
-    description     = "PostgreSQL от worker"
+    description     = "PostgreSQL from worker"
     from_port       = 5432
     to_port         = 5432
     protocol        = "tcp"

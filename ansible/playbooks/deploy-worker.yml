@@ -1,0 +1,141 @@
+# Worker: miklat-routes + miklat-walking-routes + miklat-photos (python/
+# uvicorn, тот же паттерн, что и backend) + OSRM (не python-сервис — готовый
+# бинарник в официальном Docker-образе, поэтому здесь единственном месте
+# на серверах приложения ставим Docker; сам OSRM тоже запускается как
+# systemd-юнит, обёрткой над `docker run`, ради единообразия со всеми
+# остальными сервисами — не через ansible docker-модули, чтобы не тянуть
+# ещё и Docker SDK for Python на хост).
+
+- name: Worker — routes + walking-routes + photos + OSRM
+  hosts: worker
+  become: true
+
+  vars:
+    worker_services:
+      - name: miklat-routes
+        port: "{{ miklat_routes_port }}"
+      - name: miklat-walking-routes
+        port: "{{ miklat_walking_routes_port }}"
+      - name: miklat-photos
+        port: "{{ miklat_photos_port }}"
+
+  tasks:
+    # --- python-сервисы (routes/walking-routes/photos) ---
+    - name: Перенести исходники сервисов на сервер
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../services/{{ item.name }}/"
+        dest: "{{ app_base_dir }}/{{ item.name }}/"
+        rsync_opts:
+          - "--exclude=venv"
+          - "--exclude=__pycache__"
+          - "--exclude=.pytest_cache"
+          - "--exclude=tests"
+      # Без delegate_to — см. пояснение в nginx.yml: synchronize по умолчанию
+      # уже читает src на control node и пишет dest на удалённый хост из
+      # hosts: этого play; delegate_to: inventory_hostname уводит всю команду
+      # (в т.ч. чтение src) по SSH на сам EC2, где src не существует.
+      loop: "{{ worker_services }}"
+
+    - name: >-
+        Установить Python 3.12 (дефолтный python3 на AL2023 — версия 3.9;
+        код сервисов использует синтаксис аннотаций "X | None", появившийся
+        только в Python 3.10+ — на 3.9 это TypeError уже при импорте модуля.
+        3.12 выбран, чтобы совпадать с версией из Dockerfile сервисов (Фаза 1))
+      ansible.builtin.dnf:
+        name: python3.12
+        state: present
+
+    - name: >-
+        Удалить venv, если он уже был создан под неподходящий python3.9
+        (повторный прогон после фикса версии Python)
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/{{ item.name }}/venv"
+        state: absent
+      loop: "{{ worker_services }}"
+
+    - name: Создать venv (на Python 3.12) и поставить зависимости
+      ansible.builtin.pip:
+        requirements: "{{ app_base_dir }}/{{ item.name }}/requirements.txt"
+        virtualenv: "{{ app_base_dir }}/{{ item.name }}/venv"
+        virtualenv_command: python3.12 -m venv
+      loop: "{{ worker_services }}"
+
+    - name: Владелец файлов сервисов — app_user
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/{{ item.name }}"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        recurse: true
+      loop: "{{ worker_services }}"
+
+    - name: Сгенерировать .env для каждого сервиса
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/env-{{ item.name }}.j2"
+        dest: "{{ app_base_dir }}/{{ item.name }}/.env"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0600"
+      loop: "{{ worker_services }}"
+
+    - name: Установить systemd-юнит для каждого python-сервиса
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/systemd-service.j2"
+        dest: "/etc/systemd/system/{{ item.name }}.service"
+        mode: "0644"
+      loop: "{{ worker_services }}"
+      notify: Перечитать systemd
+
+    # --- OSRM ---
+    - name: Установить Docker
+      ansible.builtin.dnf:
+        name: docker
+        state: present
+
+    - name: Включить и запустить Docker
+      ansible.builtin.systemd:
+        name: docker
+        enabled: true
+        state: started
+
+    - name: Создать директорию под данные OSRM
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/osrm/data"
+        state: directory
+        mode: "0755"
+
+    - name: >-
+        Перенести обработанный граф OSRM (osrm/data/*) с локальной машины —
+        это уже готовый результат osrm/prepare-data.sh (Фаза 1, шаг 4),
+        пересчитывать заново на t3.micro не нужно и рискованно по памяти
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../osrm/data/"
+        dest: "{{ app_base_dir }}/osrm/data/"
+      # Без delegate_to — та же причина, что и выше для python-сервисов.
+
+    - name: systemd-юнит для OSRM (обёртка над docker run)
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/osrm.service.j2"
+        dest: /etc/systemd/system/osrm.service
+        mode: "0644"
+      notify: Перечитать systemd
+
+    - name: Перечитать systemd, затем запустить все сервисы worker'а
+      ansible.builtin.meta: flush_handlers
+
+    - name: Включить и (пере)запустить python-сервисы
+      ansible.builtin.systemd:
+        name: "{{ item.name }}"
+        enabled: true
+        state: restarted
+      loop: "{{ worker_services }}"
+
+    - name: Включить и (пере)запустить OSRM
+      ansible.builtin.systemd:
+        name: osrm
+        enabled: true
+        state: restarted
+
+  handlers:
+    - name: Перечитать systemd
+      ansible.builtin.systemd:
+        daemon_reload: true

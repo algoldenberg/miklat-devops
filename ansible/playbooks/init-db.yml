@@ -1,0 +1,85 @@
+# Применяет схему db/001_init.sql (создаёт расширение PostGIS и все таблицы)
+# и загружает сид-данные db/import_seed.py на реальный RDS. Локально в
+# docker-compose (Фаза 1) это делал сам Postgres-образ автоматически при
+# первом старте (/docker-entrypoint-initdb.d) + ручной запуск import_seed.py
+# один раз — на "голом" RDS такого автозапуска нет, поэтому нужен отдельный
+# шаг. Пропущен при первом написании Ansible-кода (Фаза 2) — обнаружено по
+# факту первого реального прогона (frontend показывал пустой список,
+# gateway /ready был "ok", но сам miklat-service падал с psycopg2.errors.
+# UndefinedTable: relation "miklats" does not exist — RDS был создан
+# Terraform пустым, без единой таблицы).
+#
+# Выполняется с backend-хоста (не с control node!) — RDS security group
+# пускает подключения только от backend/worker SG, наружу (в т.ч. с машины
+# оператора) порт 5432 не открыт, и это осознанное решение (см.
+# terraform/security_groups.tf), не баг.
+#
+# Полностью самодостаточен (свой venv, не зависит от того, что уже развернул
+# deploy-backend.yml) — можно и нужно запускать сразу после base.yml, до
+# nginx.yml/deploy-backend.yml/deploy-worker.yml, при следующем деплое с нуля.
+
+- name: Инициализация БД (схема + сид-данные) на RDS
+  hosts: backend
+  become: true
+
+  vars:
+    database_url: "postgresql://{{ db_user }}:{{ db_password }}@{{ db_host }}:{{ db_port }}/{{ db_name }}"
+
+  tasks:
+    - name: Установить клиент PostgreSQL 16 (psql)
+      ansible.builtin.dnf:
+        name: postgresql16
+        state: present
+
+    - name: Установить Python 3.12 (для отдельного venv скрипта импорта сид-данных)
+      ansible.builtin.dnf:
+        name: python3.12
+        state: present
+
+    - name: Создать директорию для файлов инициализации БД
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/db-init"
+        state: directory
+        mode: "0755"
+
+    - name: Перенести db/001_init.sql, db/import_seed.py, db/requirements.txt и db/seed/*.json на сервер
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../db/"
+        dest: "{{ app_base_dir }}/db-init/"
+      # Без delegate_to — см. пояснение в nginx.yml: synchronize по умолчанию
+      # уже читает src на control node и пишет dest на удалённый хост.
+
+    - name: Создать отдельный venv с зависимостями import_seed.py (db/requirements.txt)
+      ansible.builtin.pip:
+        requirements: "{{ app_base_dir }}/db-init/requirements.txt"
+        virtualenv: "{{ app_base_dir }}/db-init/venv"
+        virtualenv_command: python3.12 -m venv
+
+    - name: Проверить, инициализирована ли уже БД (наличие таблицы miklats)
+      ansible.builtin.shell:
+        cmd: >
+          psql "{{ database_url }}" -tAc
+          "SELECT to_regclass('public.miklats') IS NOT NULL;"
+      register: db_check
+      changed_when: false
+
+    - name: Применить схему БД (001_init.sql — расширение PostGIS + все таблицы)
+      ansible.builtin.command:
+        cmd: psql "{{ database_url }}" -f 001_init.sql
+        chdir: "{{ app_base_dir }}/db-init"
+      when: "'t' not in db_check.stdout"
+
+    - name: Загрузить сид-данные (import_seed.py — 12640 miklats + comments/reports/submissions)
+      ansible.builtin.command:
+        cmd: "{{ app_base_dir }}/db-init/venv/bin/python import_seed.py"
+        chdir: "{{ app_base_dir }}/db-init"
+      environment:
+        DATABASE_URL: "{{ database_url }}"
+      when: "'t' not in db_check.stdout"
+      register: seed_import
+      changed_when: true
+
+    - name: Вывести результат импорта сид-данных
+      ansible.builtin.debug:
+        msg: "{{ seed_import.stdout_lines }}"
+      when: seed_import is not skipped

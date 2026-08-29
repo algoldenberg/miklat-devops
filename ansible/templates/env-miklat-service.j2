@@ -1,0 +1,10 @@
+DATABASE_URL=postgresql://{{ db_user }}:{{ db_password }}@{{ db_host }}:{{ db_port }}/{{ db_name }}
+ADMIN_API_KEY={{ admin_api_key }}
+AWS_REGION={{ aws_region }}
+SNS_TOPIC_ARN={{ sns_topic_arn }}
+# AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY намеренно НЕ заданы. На EC2 эти
+# креды приходят через IAM instance profile (terraform/iam.tf) — boto3 сам
+# найдёт их через instance metadata, если переменные вообще отсутствуют в
+# окружении. Задать их здесь ПУСТОЙ строкой нельзя: boto3 воспримет "" как
+# явно переданные (пустые/невалидные) credentials и не станет обращаться к
+# metadata вообще — поэтому переменные просто не пишем в файл.

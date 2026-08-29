@@ -1,0 +1,8 @@
+DATABASE_URL=postgresql://{{ db_user }}:{{ db_password }}@{{ db_host }}:{{ db_port }}/{{ db_name }}
+ADMIN_API_KEY={{ admin_api_key }}
+AWS_REGION={{ aws_region }}
+S3_BUCKET_NAME={{ s3_bucket_name }}
+SNS_TOPIC_ARN={{ sns_topic_arn }}
+# AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY — см. комментарий в
+# env-miklat-service.j2: намеренно не заданы, credentials идут через IAM
+# instance profile.

@@ -1,0 +1,75 @@
+# Базовая настройка всех трёх серверов: обновление пакетов, python3,
+# выделенный системный пользователь под приложение, рабочая директория,
+# swap-файл (подстраховка — t3.micro/db.t3.micro и т.п. это всего 1 ГБ RAM,
+# а на worker одновременно живут 3 python-сервиса + OSRM с графом в
+# 2+ млн узлов; без swap реальный риск OOM при пиковой нагрузке).
+
+- name: Базовая настройка (все серверы)
+  hosts: miklat_app
+  become: true
+
+  tasks:
+    - name: Обновить все пакеты
+      ansible.builtin.dnf:
+        name: "*"
+        state: latest
+      register: dnf_update
+      retries: 3
+      delay: 10
+      until: dnf_update is succeeded
+
+    - name: Установить базовые пакеты
+      ansible.builtin.dnf:
+        name:
+          - python3
+          - python3-pip
+          - git
+          - rsync # нужен модулю synchronize (перенос кода фронтенда и OSRM-данных)
+        state: present
+
+    - name: Создать системного пользователя приложения
+      ansible.builtin.user:
+        name: "{{ app_user }}"
+        system: true
+        shell: /sbin/nologin
+        home: "{{ app_base_dir }}"
+        create_home: false
+
+    - name: Создать рабочую директорию приложения
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}"
+        state: directory
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        mode: "0755"
+
+    - name: Проверить, есть ли уже активный swap
+      ansible.builtin.command: swapon --show
+      register: swap_check
+      changed_when: false
+
+    - name: Создать и включить swap-файл (1 ГБ), если его ещё нет
+      when: swap_check.stdout == ""
+      block:
+        - name: Выделить файл подкачки
+          ansible.builtin.command: fallocate -l 1G /swapfile
+          args:
+            creates: /swapfile
+
+        - name: Права на файл подкачки (0600 — иначе swapon откажется)
+          ansible.builtin.file:
+            path: /swapfile
+            mode: "0600"
+
+        - name: Пометить файл как swap
+          ansible.builtin.command: mkswap /swapfile
+          changed_when: true
+
+        - name: Включить swap
+          ansible.builtin.command: swapon /swapfile
+          changed_when: true
+
+        - name: Прописать swap в fstab (переживает reboot)
+          ansible.builtin.lineinfile:
+            path: /etc/fstab
+            line: "/swapfile none swap sw 0 0"

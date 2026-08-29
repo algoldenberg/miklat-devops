@@ -12,8 +12,12 @@ data "aws_ssm_parameter" "al2023_ami" {
 # не хранит — им управляет только тот, кто запускает apply/ansible, как и
 # остальными секретами проекта.
 resource "aws_key_pair" "main" {
-  key_name   = "${var.project_name}-key"
-  public_key = file(var.ssh_public_key_path)
+  key_name = "${var.project_name}-key"
+  # pathexpand() — на случай, если путь в tfvars задан с "~" (Terraform,
+  # в отличие от bash, сам "~" не разворачивает). Тем не менее на Windows
+  # надёжнее всё равно указывать полный путь с буквой диска (C:/Users/...),
+  # а не "~" и не MSYS-стиль "/c/Users/..." — см. terraform.tfvars.example.
+  public_key = file(pathexpand(var.ssh_public_key_path))
 
   tags = {
     Name = "${var.project_name}-key"

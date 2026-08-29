@@ -613,3 +613,116 @@ identity) и корректно упал именно там с `InvalidClientTo
 Claude нет и быть не может. Реальный `terraform init/plan/apply` на настоящем аккаунте — следующий шаг,
 выполняется пользователем со своей машины (см. рабочее соглашение по git/AWS-доступу в `miklat-progress.md`).
 
+**Обновление:** реальный `terraform apply` выполнен, все 26 ресурсов созданы (см. журнал в
+`miklat-progress.md`) — IP серверов, RDS endpoint, S3-бакет и ARN SNS-топика зафиксированы там же.
+
+## Конфигурация серверов: Ansible (Задание 2, продолжение)
+
+Весь код — в `ansible/`. Настраивает три уже созданных Terraform'ом EC2 (frontend/backend/worker):
+устанавливает нужные пакеты, разворачивает шесть python/uvicorn-сервисов и nginx как systemd-юниты,
+поднимает OSRM.
+
+### Ansible не запускается из-под нативного Windows
+
+`ansible-playbook` официально не поддерживает Windows как control node. Вместо WSL используется Docker
+(он и так уже нужен всему остальному проекту) — `ansible/Dockerfile` собирает образ с Ansible и SSH-клиентом,
+внутрь монтируются код репозитория и SSH-ключ. Этот контейнер — чисто инструмент запуска, он никак не привязан
+к тому, что настраивает: при любых будущих изменениях (домен, другой сервер) меняется только `inventory.ini`,
+сам механизм запуска остаётся тем же.
+
+### Файлы
+
+| Файл/папка | Что содержит |
+|---|---|
+| `Dockerfile` | Образ control node — Python + Ansible + openssh-client + rsync |
+| `ansible.cfg` | `host_key_checking = False` (стенд пересоздаётся через terraform apply/destroy, IP и host key каждый раз новые) |
+| `inventory.ini.example` | Шаблон инвентаря — 3 хоста по группам frontend/backend/worker |
+| `group_vars/all/vars.yml` | Несекретные настройки (порты, пути, имя БД) — коммитится |
+| `group_vars/all/secrets.yml.example` | Шаблон секретов/значений из `terraform output` (пароль БД, ARN, приватные IP) |
+| `playbooks/base.yml` | Все хосты: обновление пакетов, python3, системный пользователь `miklat`, swap-файл |
+| `playbooks/nginx.yml` | Только frontend: nginx + сборка React/Vite прямо на сервере, reverse proxy `/api/*` |
+| `playbooks/deploy-backend.yml` | `miklat-gateway` + `miklat-service` + `miklat-comments` — venv + systemd |
+| `playbooks/deploy-worker.yml` | `miklat-routes` + `miklat-walking-routes` + `miklat-photos` (venv + systemd) + OSRM (Docker + systemd) |
+| `templates/` | Jinja2-шаблоны: `.env` на каждый сервис, общий systemd-юнит для python-сервисов, отдельный — для OSRM, nginx-конфиг |
+
+### Ключевые решения
+
+- **Сервисы — как systemd-юниты поверх venv, не Docker** (кроме OSRM) — соответствует плану Задания 2
+  буквально ("Python venv... systemd unit на каждый сервис"); Docker/контейнеризация всего стека — тема
+  Задания 3 (K8s), здесь так специально не делаем, чтобы не смешивать содержательные части двух заданий.
+- **OSRM — исключение, через Docker**: это готовый бинарник в официальном образе
+  (`ghcr.io/project-osrm/osrm-backend`), а не свой python-код — устанавливать/собирать его "нативно" на
+  EC2 намного сложнее и хрупче, чем один `docker run`. Запускается как systemd-юнит, обёрткой над `docker
+  run` — ради единообразия со всеми остальными сервисами, без модулей `community.docker` (не нужен ещё и
+  Docker SDK for Python на хосте).
+- **Обработанный граф OSRM переносится, а не пересчитывается на сервере** — `osrm/data/*` из Фазы 1 (шаг 4)
+  копируется rsync'ом с локальной машины. Пересчёт (`osrm-extract/partition/customize`) на t3.micro (1 ГБ
+  RAM) для карты такого размера — рискованно по памяти и на порядок дольше, а результат уже есть и
+  проверен.
+- **`AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` в `.env`-файлах сервисов НЕ прописываются** — на EC2
+  credentials приходят через IAM instance profile (см. `terraform/iam.tf`), boto3 сам находит их через
+  instance metadata. Явно прописать их пустой строкой было бы ошибкой — boto3 воспринял бы `""` как
+  реальные (пустые/невалидные) credentials и не стал бы обращаться к metadata вообще.
+- **gateway обращается к соседям по backend через `127.0.0.1`**, а к worker — по приватному IP: `miklat-
+  service`/`miklat-comments` живут на том же хосте, что и `miklat-gateway`, `miklat-routes`/`miklat-walking-
+  routes`/`miklat-photos` — на другом (см. `terraform/security_groups.tf`).
+- **Swap-файл (1 ГБ) на всех трёх хостах** (`base.yml`) — подстраховка: t3.micro/db.t3.micro — это всего
+  1 ГБ RAM, а на worker одновременно работают 3 python-сервиса и OSRM с графом в 2+ млн узлов. Если этого
+  всё равно не хватит — самое простое лечение потом — поднять `instance_type` конкретно для worker через
+  Terraform (сейчас у всех трёх ролей общая переменная), не переделывая Ansible.
+- **Копирование кода — через `ansible.posix.synchronize` (rsync), не `ansible.builtin.copy`** — для
+  фронтенда и особенно для данных OSRM (потенциально сотни МБ) обычный `copy` намного медленнее (модуль
+  гоняет файлы через тот же канал, что и остальные ansible-команды, без rsync-дельт); плюс `synchronize`
+  поддерживает `--exclude` (нужно исключить `node_modules`/`dist` у фронтенда, `venv`/`__pycache__` у
+  python-сервисов).
+- **Хосты в `inventory.ini` — просто IP-адреса**, не алиасы вроде "frontend" — иначе ansible ругается
+  предупреждением "Found both group and host with same name" (группа `[frontend]` и единственный хост
+  внутри неё назывались бы одинаково).
+
+### Как запустить
+
+```bash
+# один раз — собрать образ control node:
+docker build -t miklat-ansible ansible/
+
+cd ansible
+cp inventory.ini.example inventory.ini
+# вписать в inventory.ini три публичных IP из `terraform output`
+# (frontend_public_ip / backend_public_ip / worker_public_ip)
+
+cp group_vars/all/secrets.yml.example group_vars/all/secrets.yml
+# заполнить реальными значениями: db_host, db_password, admin_api_key,
+# s3_bucket_name, sns_topic_arn, backend_private_ip, worker_private_ip
+# (всё это тоже из `terraform output` / terraform.tfvars)
+
+cd ..  # обратно в корень репозитория
+docker run --rm -it \
+  -v "$(pwd):/ansible" \
+  -v "$HOME/.ssh:/root/.ssh:ro" \
+  -w /ansible/ansible \
+  miklat-ansible bash
+```
+
+Внутри контейнера (один раз за сессию — разблокировать SSH-ключ, если он с passphrase):
+
+```bash
+eval "$(ssh-agent -s)"
+ssh-add /root/.ssh/miklat-devops
+
+ansible-playbook playbooks/base.yml
+ansible-playbook playbooks/nginx.yml
+ansible-playbook playbooks/deploy-backend.yml
+ansible-playbook playbooks/deploy-worker.yml
+```
+
+После всех четырёх — открыть `http://<frontend_public_ip>/` в браузере, должно показать то же самое
+приложение, что и `docker compose up` в Фазе 1, только теперь на реальной AWS-инфраструктуре.
+
+### Проверено
+
+`ansible-playbook --syntax-check` для всех 4 плейбуков — без ошибок (сначала была одна ошибка —
+предупреждение "Found both group and host with same name" из-за алиасов в inventory, исправлено на прямые
+IP). Все Jinja2-шаблоны (`.env.j2`, systemd-юниты, nginx-конфиг) распарсены `jinja2.Environment().parse()`
+без синтаксических ошибок. Реальный прогон плейбуков на настоящих EC2 — следующий шаг, у Claude нет SSH-
+доступа к серверам пользователя (тот же принцип, что и с git push/terraform apply).
+

@@ -1,0 +1,106 @@
+# Frontend: nginx + сборка React/Vite прямо на сервере (не копируем готовый
+# dist/ с локальной машины — так деплой воспроизводим сам по себе, не зависит
+# от того, что именно уже собрано у оператора локально).
+
+- name: Frontend — nginx + сборка React/Vite
+  hosts: frontend
+  become: true
+
+  tasks:
+    - name: >-
+        Подключить репозиторий NodeSource — Node.js 22 LTS (Vite 8, который
+        использует frontend, требует Node >=20.19/22.12 из-за node:util.styleText;
+        стандартный `dnf install nodejs` на Amazon Linux 2023 даёт устаревший Node 18,
+        на котором сборка падает: SyntaxError: node:util does not provide styleText)
+      ansible.builtin.shell:
+        cmd: curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+      args:
+        creates: /etc/yum.repos.d/nodesource-el.repo
+
+    - name: >-
+        Удалить старый nodejs/nodejs-npm из штатного репозитория AL2023 —
+        пакет nodejs-npm жёстко требует ровно версию nodejs 18.20.8, из-за
+        чего dnf отказывается ставить nodejs 22 из NodeSource поверх (конфликт
+        зависимостей, а не поломка репозитория)
+      ansible.builtin.dnf:
+        name:
+          - nodejs
+          - nodejs-npm
+        state: absent
+
+    - name: >-
+        Установить nginx и Node.js 22 (из NodeSource — npm идёт в комплекте
+        с самим пакетом nodejs, отдельный пакет npm не нужен)
+      ansible.builtin.dnf:
+        name:
+          - nginx
+          - nodejs
+        state: present
+
+    - name: Перенести исходники frontend на сервер (без node_modules/dist)
+      ansible.posix.synchronize:
+        src: "{{ playbook_dir }}/../../frontend/"
+        dest: "{{ app_base_dir }}/frontend/"
+        rsync_opts:
+          - "--exclude=node_modules"
+          - "--exclude=dist"
+          - "--exclude=.env"
+      # ВАЖНО: без delegate_to. synchronize по умолчанию УЖЕ считает, что src —
+      # на control node (наш docker-контейнер с примонтированным репозиторием),
+      # а dest — на удалённом хосте из hosts: этого play. Если явно добавить
+      # delegate_to: "{{ inventory_hostname }}", вся команда rsync (включая
+      # чтение src) уйдёт по SSH на сам EC2 — а там пути src, конечно, нет
+      # (баг, найденный и исправленный по факту реального прогона на EC2).
+
+    - name: npm ci (установка зависимостей строго по package-lock.json)
+      ansible.builtin.command:
+        cmd: npm ci
+        chdir: "{{ app_base_dir }}/frontend"
+      changed_when: true
+
+    - name: npm run build (собрать статику в dist/)
+      ansible.builtin.command:
+        cmd: npm run build
+        chdir: "{{ app_base_dir }}/frontend"
+      changed_when: true
+
+    - name: Владелец скопированных файлов — app_user
+      ansible.builtin.file:
+        path: "{{ app_base_dir }}/frontend"
+        owner: "{{ app_user }}"
+        group: "{{ app_user }}"
+        recurse: true
+
+    - name: Разрешить nginx (worker-процессу) обход до dist/ — x на родительские директории
+      ansible.builtin.file:
+        path: "{{ item }}"
+        mode: "0755"
+      loop:
+        - "{{ app_base_dir }}"
+        - "{{ app_base_dir }}/frontend"
+        - "{{ app_base_dir }}/frontend/dist"
+
+    - name: Конфиг nginx — reverse proxy /api/* на backend
+      ansible.builtin.template:
+        src: "{{ playbook_dir }}/../templates/nginx-frontend.conf.j2"
+        dest: /etc/nginx/conf.d/miklat.conf
+        mode: "0644"
+      notify: Перезапустить nginx
+
+    - name: Убрать дефолтный конфиг nginx (конфликтует по listen 80 / server_name _)
+      ansible.builtin.file:
+        path: /etc/nginx/conf.d/default.conf
+        state: absent
+      notify: Перезапустить nginx
+
+    - name: Включить и запустить nginx
+      ansible.builtin.systemd:
+        name: nginx
+        enabled: true
+        state: started
+
+  handlers:
+    - name: Перезапустить nginx
+      ansible.builtin.systemd:
+        name: nginx
+        state: restarted
