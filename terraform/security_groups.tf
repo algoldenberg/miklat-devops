@@ -168,6 +168,22 @@ resource "aws_security_group" "rds" {
     security_groups = [aws_security_group.worker.id]
   }
 
+  # Фаза 3 (Kubernetes, Задание 3): k3s развёрнут на mbdai — отдельном VPS
+  # вне этого VPC, а не на EC2 внутри него, как backend/worker. Поэтому
+  # доступ по членству в SG (как выше) для него не работает — единственный
+  # вариант различить его от произвольного интернет-IP это явный CIDR с его
+  # публичным адресом. Осознанный компромисс: это единственное правило,
+  # открывающее RDS по IP, а не по SG, и оно необходимо только пока k3s
+  # живёт вне AWS. Обнаружено на реальном деплое — до этого правила поды на
+  # mbdai не могли достучаться до RDS (TCP-соединение молча дропалось).
+  ingress {
+    description = "PostgreSQL from mbdai (k3s cluster, Phase 3 - outside VPC)"
+    from_port   = 5432
+    to_port     = 5432
+    protocol    = "tcp"
+    cidr_blocks = [var.mbdai_public_ip]
+  }
+
   egress {
     from_port   = 0
     to_port     = 0
