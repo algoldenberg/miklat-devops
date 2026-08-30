@@ -21,11 +21,27 @@ resource "aws_db_instance" "main" {
   db_subnet_group_name   = aws_db_subnet_group.main.name
   vpc_security_group_ids = [aws_security_group.rds.id]
 
-  # НЕ публичный доступ — несмотря на то, что подсеть технически "публичная"
-  # (см. обоснование в network.tf), сама RDS не получает публичный IP, а SG
-  # и так пускает только backend/worker. Двойная защита, а не полагание на
-  # что-то одно.
-  publicly_accessible = false
+  # ОБНОВЛЕНО в Фазе 3 (Задание 3): изначально было `false` — несмотря на то,
+  # что подсеть технически "публичная" (см. обоснование в network.tf), сама
+  # RDS не получала публичный IP, полагаясь на то, что backend/worker и так
+  # внутри VPC. Но k3s (mbdai) живёт СНАРУЖИ VPC — при publicly_accessible=
+  # false DNS-имя RDS резолвится ТОЛЬКО в приватный IP, недостижимый снаружи
+  # вообще никаким SG-правилом (это обнаружено на реальном деплое: правило
+  # в aws_security_group.rds для IP mbdai уже было применено, но TCP-подключение
+  # с mbdai всё равно падало по таймауту — потому что пакетам физически
+  # некуда маршрутизироваться до приватного IP без VPN/peering).
+  # Осознанный компромисс (задокументировать в README, по аналогии с "no NAT
+  # Gateway" и NodePort-Ingress): переключаем на `true`, чтобы у RDS появился
+  # публичный IP, но реальная защита остаётся на security group — она и так
+  # уже сужена до backend/worker SG (изнутри VPC) + один конкретный /32 IP
+  # mbdai (снаружи), а не 0.0.0.0/0.
+  publicly_accessible = true
+
+  # Без этого флага AWS применил бы publicly_accessible не сразу, а только
+  # в следующее maintenance window (см. поведение aws_db_instance без
+  # apply_immediately) — для учебного стенда это не нужно, изменение должно
+  # подействовать сразу после terraform apply.
+  apply_immediately = true
 
   # multi-AZ намеренно выключен — учебный стенд с одним стейджем, лишние
   # деньги без реальной надобности (нет продакшен-SLA, который нужно держать).
