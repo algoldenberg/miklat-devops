@@ -1,0 +1,81 @@
+# miklat-comments — CRUD комментариев/рейтингов. Единственный из backend-
+# сервисов, кому не нужны AWS-переменные (нет ни S3, ни SNS в этом сервисе).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miklat-comments
+  namespace: miklat-app
+  labels:
+    app: miklat-comments
+    part-of: miklat
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: miklat-comments
+  template:
+    metadata:
+      labels:
+        app: miklat-comments
+        part-of: miklat
+        tier: backend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: miklat-comments
+          image: ghcr.io/algoldenberg/miklat-comments:7fb370d
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: DATABASE_URL
+            - name: ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: ADMIN_API_KEY
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: miklat-comments
+  namespace: miklat-app
+  labels:
+    app: miklat-comments
+spec:
+  type: ClusterIP
+  selector:
+    app: miklat-comments
+  ports:
+    - port: 8000
+      targetPort: 8000

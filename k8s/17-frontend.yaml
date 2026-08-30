@@ -1,0 +1,77 @@
+# frontend — статика (React+Vite+Leaflet) через non-root nginx. Никаких
+# env vars не нужно: адрес шлюза зашит в frontend/nginx.conf на этапе
+# сборки образа ("http://miklat-gateway:8000") — совпадает с именем Service
+# miklat-gateway ниже, поэтому уже собранный образ из GHCR работает без
+# пересборки. Единственный сервис, у которого будет внешний доступ — через
+# Ingress (следующий шаг плана), сюда HTTP не проксируется напрямую из
+# интернета.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: frontend
+  namespace: miklat-app
+  labels:
+    app: frontend
+    part-of: miklat
+    tier: frontend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+        part-of: miklat
+        tier: frontend
+    spec:
+      # runAsUser не задаём явно — образ уже переключается на USER nginx
+      # в самом Dockerfile (Фаза 1), runAsNonRoot тут только подтверждает
+      # требование на уровне Pod.
+      securityContext:
+        runAsNonRoot: true
+      containers:
+        - name: frontend
+          image: ghcr.io/algoldenberg/frontend:7fb370d
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "25m"
+              memory: "32Mi"
+            limits:
+              cpu: "100m"
+              memory: "128Mi"
+          readinessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: frontend
+  namespace: miklat-app
+  labels:
+    app: frontend
+spec:
+  type: ClusterIP
+  selector:
+    app: frontend
+  ports:
+    - port: 8080
+      targetPort: 8080

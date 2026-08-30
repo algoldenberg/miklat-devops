@@ -1,0 +1,102 @@
+# miklat-service — CRUD укрытий, ближайшее укрытие, модерация заявок,
+# report-эндпоинт (SNS-триггер #2 "жалоба"). Образ: Фаза 3, шаг 3
+# (ghcr.io/algoldenberg/miklat-service, публичный, тег = commit-SHA).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miklat-service
+  namespace: miklat-app
+  labels:
+    app: miklat-service
+    part-of: miklat
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: miklat-service
+  template:
+    metadata:
+      labels:
+        app: miklat-service
+        part-of: miklat
+        tier: backend
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: miklat-service
+          image: ghcr.io/algoldenberg/miklat-service:7fb370d
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: DATABASE_URL
+            - name: ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: ADMIN_API_KEY
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: SNS_TOPIC_ARN
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: SNS_TOPIC_ARN
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: miklat-config
+                  key: AWS_REGION
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: miklat-service
+  namespace: miklat-app
+  labels:
+    app: miklat-service
+spec:
+  type: ClusterIP
+  selector:
+    app: miklat-service
+  ports:
+    - port: 8000
+      targetPort: 8000

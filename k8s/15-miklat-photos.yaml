@@ -1,0 +1,107 @@
+# miklat-photos — загрузка фото в S3 + SNS-триггер модерации (#1b). Единст-
+# венный сервис, которому нужен S3_BUCKET_NAME в дополнение к остальным
+# AWS-переменным.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miklat-photos
+  namespace: miklat-app
+  labels:
+    app: miklat-photos
+    part-of: miklat
+    tier: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: miklat-photos
+  template:
+    metadata:
+      labels:
+        app: miklat-photos
+        part-of: miklat
+        tier: worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: miklat-photos
+          image: ghcr.io/algoldenberg/miklat-photos:7fb370d
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: DATABASE_URL
+            - name: ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: ADMIN_API_KEY
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: S3_BUCKET_NAME
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: S3_BUCKET_NAME
+            - name: SNS_TOPIC_ARN
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: SNS_TOPIC_ARN
+            - name: AWS_REGION
+              valueFrom:
+                configMapKeyRef:
+                  name: miklat-config
+                  key: AWS_REGION
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: miklat-photos
+  namespace: miklat-app
+  labels:
+    app: miklat-photos
+spec:
+  type: ClusterIP
+  selector:
+    app: miklat-photos
+  ports:
+    - port: 8000
+      targetPort: 8000

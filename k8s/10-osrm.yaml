@@ -1,0 +1,91 @@
+# OSRM — сторонний образ (не наш код, поэтому не входит в 7 Dockerfile'ов
+# Фазы 3 п.3), готовый пешеходный граф Израиля/Палестины (Фаза 1, шаг 4).
+#
+# Данные графа (~890 МБ, см. journal Фазы 3) смонтированы через hostPath —
+# осознанный компромисс для single-node k3s: кластер состоит из одной ноды
+# (mbdai), PersistentVolume с сетевым backend'ом (например NFS) был бы
+# избыточен для среды, которая физически не может мигрировать под на другой
+# узел. hostPath не переживёт замену/добавление ноды — задокументировано в
+# README (раздел Security/trade-offs) как ограничение single-node кластера,
+# не забытая деталь.
+#
+# securityContext БЕЗ runAsNonRoot: официальный образ ghcr.io/project-osrm/
+# osrm-backend запускается от root и не предоставляет непривилегированного
+# пользователя — в отличие от наших 7 сервисов, здесь мы не контролируем
+# Dockerfile. Остальные ограничения (allowPrivilegeEscalation, capabilities)
+# применены и сюда.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: osrm
+  namespace: miklat-app
+  labels:
+    app: osrm
+    part-of: miklat
+    tier: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: osrm
+  template:
+    metadata:
+      labels:
+        app: osrm
+        part-of: miklat
+        tier: worker
+    spec:
+      containers:
+        - name: osrm
+          image: ghcr.io/project-osrm/osrm-backend
+          imagePullPolicy: IfNotPresent
+          command: ["osrm-routed", "--algorithm", "mld", "/data/israel-and-palestine-latest.osrm"]
+          ports:
+            - containerPort: 5000
+          volumeMounts:
+            - name: osrm-data
+              mountPath: /data
+              readOnly: true
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "700Mi"
+            limits:
+              cpu: "1"
+              memory: "1536Mi"
+          readinessProbe:
+            tcpSocket:
+              port: 5000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            timeoutSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: 5000
+            initialDelaySeconds: 30
+            periodSeconds: 20
+            timeoutSeconds: 5
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: osrm-data
+          hostPath:
+            path: /opt/miklat-devops/osrm/data
+            type: Directory
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: osrm
+  namespace: miklat-app
+  labels:
+    app: osrm
+spec:
+  type: ClusterIP
+  selector:
+    app: osrm
+  ports:
+    - port: 5000
+      targetPort: 5000

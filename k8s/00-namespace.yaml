@@ -1,0 +1,9 @@
+# Отдельный namespace для всего приложения (Задание 3, п.2 плана) — НЕ default,
+# изолирован от любых других workloads на этом же k3s-кластере на mbdai.
+# Уже создан вручную (`kubectl create namespace miklat-app`) на шаге 2 —
+# этот файл тут ради воспроизводимости (`kubectl apply` идемпотентен, повторное
+# применение ничего не сломает и не пересоздаст namespace).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: miklat-app

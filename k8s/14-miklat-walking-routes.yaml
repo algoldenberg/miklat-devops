@@ -1,0 +1,82 @@
+# miklat-walking-routes — маршрут между двумя точками / "маршрут до этого
+# укрытия" (основной сценарий фронтенда). Зависит от OSRM, как и
+# miklat-routes.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miklat-walking-routes
+  namespace: miklat-app
+  labels:
+    app: miklat-walking-routes
+    part-of: miklat
+    tier: worker
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: miklat-walking-routes
+  template:
+    metadata:
+      labels:
+        app: miklat-walking-routes
+        part-of: miklat
+        tier: worker
+    spec:
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: miklat-walking-routes
+          image: ghcr.io/algoldenberg/miklat-walking-routes:7fb370d
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: DATABASE_URL
+            - name: OSRM_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: miklat-config
+                  key: OSRM_BASE_URL
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: miklat-walking-routes
+  namespace: miklat-app
+  labels:
+    app: miklat-walking-routes
+spec:
+  type: ClusterIP
+  selector:
+    app: miklat-walking-routes
+  ports:
+    - port: 8000
+      targetPort: 8000
