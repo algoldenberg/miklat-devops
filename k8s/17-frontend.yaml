@@ -26,11 +26,17 @@ spec:
         part-of: miklat
         tier: frontend
     spec:
-      # runAsUser не задаём явно — образ уже переключается на USER nginx
-      # в самом Dockerfile (Фаза 1), runAsNonRoot тут только подтверждает
-      # требование на уровне Pod.
+      # runAsUser: 101 — UID пользователя nginx в официальном образе
+      # nginx:1.27-alpine (стандартный для всех nginx:alpine, не наш выбор).
+      # Без явного числового UID kubelet не может проверить runAsNonRoot
+      # для non-numeric USER-директивы (USER nginx в Dockerfile, Фаза 1) —
+      # падает с "container has runAsNonRoot and image has non-numeric
+      # user (nginx), cannot verify user is non-root" (CreateContainerConfigError).
+      # Обнаружено на реальном деплое в Фазе 3 (k3s не парсит /etc/passwd
+      # образа без его запуска), исправлено явным runAsUser.
       securityContext:
         runAsNonRoot: true
+        runAsUser: 101
       containers:
         - name: frontend
           image: ghcr.io/algoldenberg/frontend:7fb370d
