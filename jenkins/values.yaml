@@ -121,15 +121,85 @@ rbac:
   readSecrets: false
 
 agent:
-  image:
-    repository: jenkins/inbound-agent
-    tag: "3355.v388858a_47b_33-23"   # зафиксированная версия базового agent-образа
-  resources:
-    requests:
-      cpu: "250m"
-      memory: "512Mi"
-    limits:
-      cpu: "500m"
-      memory: "1Gi"
-  podRetention: Never
-  containerCap: 5
+  # Фаза 4, шаг 2: дефолтный generic jnlp pod template чарта отключён —
+  # используем только два целевых template'а ниже (ci-agent/cd-agent), как
+  # того требует план. `enabled: false` убирает только сам дефолтный
+  # template, но НЕ Kubernetes Cloud целиком — она уже настроена чартом на
+  # шаге 1 (namespace `jenkins`, ServiceAccount, RBAC), наши template'ы
+  # регистрируются в ней же через нативный ключ `podTemplates` (в отличие от
+  # кастомного JCasC configScript — это не создаёт риска конфликта, который
+  # мы уже ловили на шаге 1: `podTemplates` — собственный механизм чарта,
+  # а не второй независимый источник JCasC).
+  enabled: false
+
+  # Общие для всей Kubernetes Cloud настройки (относятся ко ВСЕМ pod
+  # template'ам, не только к отключённому дефолтному):
+  podRetention: Never    # под живёт ровно на время сборки — ephemeral workspace по плану
+  containerCap: 5        # не больше 5 одновременных agent-подов (защита от перегрузки узла)
+
+  # -- Кастомные pod template'ы для Kubernetes Cloud (Фаза 4, шаг 2) --
+  # ServiceAccount у обоих template'ов пока не задан (значит, используется
+  # дефолтный `jenkins` SA из namespace `jenkins`, настроенный на шаге 1
+  # с минимальным правом только управлять подами в СВОЁМ namespace) —
+  # выделенные ServiceAccount с явным разведением прав (`miklat-ci` без
+  # доступа к деплою вообще, `miklat-cd` — только в namespace `miklat-app`)
+  # запланированы отдельным шагом 7 (Security), делать это раньше времени
+  # значило бы забегать вперёд плана и рисковать сослаться на несуществующий
+  # SA (под тогда не создастся вообще). Сейчас оба agent'а физически не
+  # могут ничего задеплоить за пределы namespace `jenkins`, даже если
+  # захотят — это ожидаемо и безопасно на этом шаге.
+  podTemplates:
+    ciAgent: |
+      - name: ci-agent
+        label: ci-agent
+        containers:
+          - name: git
+            image: alpine/git:2.54.0
+            command: "cat"
+            args: ""
+            ttyEnabled: true
+            resourceRequestCpu: "100m"
+            resourceRequestMemory: "128Mi"
+            resourceLimitCpu: "250m"
+            resourceLimitMemory: "256Mi"
+          - name: python-tools
+            image: python:3.12-slim
+            command: "cat"
+            args: ""
+            ttyEnabled: true
+            resourceRequestCpu: "250m"
+            resourceRequestMemory: "512Mi"
+            resourceLimitCpu: "500m"
+            resourceLimitMemory: "1Gi"
+          - name: node-tools
+            image: node:22-slim
+            command: "cat"
+            args: ""
+            ttyEnabled: true
+            resourceRequestCpu: "250m"
+            resourceRequestMemory: "512Mi"
+            resourceLimitCpu: "500m"
+            resourceLimitMemory: "1Gi"
+          - name: kaniko
+            image: gcr.io/kaniko-project/executor:v1.23.2-debug
+            command: "cat"
+            args: ""
+            ttyEnabled: true
+            privileged: false
+            resourceRequestCpu: "250m"
+            resourceRequestMemory: "512Mi"
+            resourceLimitCpu: "1"
+            resourceLimitMemory: "1536Mi"
+    cdAgent: |
+      - name: cd-agent
+        label: cd-agent
+        containers:
+          - name: kubectl-helm
+            image: dtzar/helm-kubectl:4.2.3
+            command: "cat"
+            args: ""
+            ttyEnabled: true
+            resourceRequestCpu: "100m"
+            resourceRequestMemory: "256Mi"
+            resourceLimitCpu: "500m"
+            resourceLimitMemory: "512Mi"
