@@ -112,7 +112,12 @@ pipeline {
                                         python3 -m venv "/tmp/venv-${name}"
                                         . "/tmp/venv-${name}/bin/activate"
                                         pip install --quiet --no-cache-dir -r "${svc}requirements.txt"
-                                        pip install --quiet --no-cache-dir pytest
+                                        # httpx - не рантайм-зависимость сервиса, а требование
+                                        # starlette.testclient (fastapi.testclient.TestClient
+                                        # использует его под капотом, начиная с версий, где
+                                        # TestClient перешёл с requests на httpx) — нужен только
+                                        # тестовому окружению, поэтому ставим отдельно здесь.
+                                        pip install --quiet --no-cache-dir pytest httpx
                                         (cd "${svc}" && pytest tests/test_health.py -q)
                                         deactivate
                                     fi
