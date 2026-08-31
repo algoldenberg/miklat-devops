@@ -1,0 +1,201 @@
+// Jenkinsfile-ci
+// Фаза 4, шаг 4.4: CI-пайплайн miklat-ci.
+// Запускается автоматически по GitHub webhook (githubPush(), см. Job DSL в
+// jenkins/values.yaml) либо вручную (Build Now).
+//
+// Логические части: checkout → validate (структура + Dockerfile lint) →
+// lint → тесты (минимальный набор) → определение изменившихся сервисов →
+// build&push через kaniko → publish metadata.
+//
+// Осознанное сужение: полный `pytest tests/` для бэкенд-сервисов требует
+// живой Postgres+PostGIS с сид-данными — этого в CI-агенте нет и не
+// планируется (агент собирается по требованию, без stateful-зависимостей).
+// План явно говорит "тесты (минимальный набор)" — берём буквально: гоняем
+// только tests/test_health.py, единственный тест, документированно не
+// требующий БД. Полное интеграционное тестирование с БД — кандидат на
+// будущее улучшение, не реализовано сейчас.
+pipeline {
+    agent { label 'ci-agent' }
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+    }
+
+    environment {
+        REGISTRY = 'ghcr.io'
+        IMAGE_NS = 'algoldenberg'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                container('git') {
+                    checkout scm
+                    script {
+                        env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    }
+                }
+            }
+        }
+
+        stage('Validate') {
+            steps {
+                container('python-tools') {
+                    sh 'python3 ci/validate.py'
+                }
+            }
+        }
+
+        stage('Lint') {
+            parallel {
+                stage('Python') {
+                    steps {
+                        container('python-tools') {
+                            sh '''
+                                pip install --quiet --no-cache-dir ruff
+                                for svc in services/*/; do
+                                    echo "== ruff: ${svc} =="
+                                    ruff check "${svc}" || exit 1
+                                done
+                            '''
+                        }
+                    }
+                }
+                stage('Frontend') {
+                    steps {
+                        container('node-tools') {
+                            dir('frontend') {
+                                sh '''
+                                    npm ci
+                                    npx oxlint src/
+                                '''
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Tests') {
+            parallel {
+                stage('Python services') {
+                    steps {
+                        container('python-tools') {
+                            sh '''
+                                for svc in services/*/; do
+                                    name=$(basename "$svc")
+                                    if [ -f "${svc}tests/test_health.py" ]; then
+                                        echo "== pytest (smoke): ${name} =="
+                                        python3 -m venv "/tmp/venv-${name}"
+                                        . "/tmp/venv-${name}/bin/activate"
+                                        pip install --quiet --no-cache-dir -r "${svc}requirements.txt"
+                                        pip install --quiet --no-cache-dir pytest
+                                        (cd "${svc}" && pytest tests/test_health.py -q)
+                                        deactivate
+                                    fi
+                                done
+                            '''
+                        }
+                    }
+                }
+                stage('Frontend build') {
+                    steps {
+                        container('node-tools') {
+                            dir('frontend') {
+                                sh 'npm run build'
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Detect changed services') {
+            steps {
+                container('git') {
+                    script {
+                        def allServices = ['frontend', 'miklat-gateway', 'miklat-service', 'miklat-comments', 'miklat-routes', 'miklat-walking-routes', 'miklat-photos']
+                        def changed = []
+                        def diffExit = sh(script: 'git rev-parse HEAD~1 >/dev/null 2>&1', returnStatus: true)
+                        if (diffExit == 0) {
+                            def changedFiles = sh(script: 'git diff --name-only HEAD~1 HEAD', returnStdout: true).trim().split('\n')
+                            for (svc in allServices) {
+                                def prefix = (svc == 'frontend') ? 'frontend/' : "services/${svc}/"
+                                if (changedFiles.any { it.startsWith(prefix) }) {
+                                    changed << svc
+                                }
+                            }
+                        } else {
+                            echo 'Нет предыдущего коммита для сравнения — собираем все сервисы.'
+                            changed = allServices
+                        }
+                        env.CHANGED_SERVICES = changed.join(',')
+                        echo "Изменившиеся сервисы: ${env.CHANGED_SERVICES}"
+                    }
+                }
+            }
+        }
+
+        stage('Build & push (kaniko)') {
+            when {
+                expression { return env.CHANGED_SERVICES?.trim() }
+            }
+            steps {
+                container('kaniko') {
+                    withCredentials([usernamePassword(credentialsId: 'ghcr-credentials', usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+                        sh '''
+                            mkdir -p /kaniko/.docker
+                            AUTH=$(printf '%s:%s' "$REG_USER" "$REG_PASS" | base64 | tr -d '\\n')
+                            cat > /kaniko/.docker/config.json <<EOF
+{"auths":{"${REGISTRY}":{"auth":"${AUTH}"}}}
+EOF
+                        '''
+                        script {
+                            env.CHANGED_SERVICES.split(',').each { svc ->
+                                def context = (svc == 'frontend') ? 'frontend' : "services/${svc}"
+                                def image = "${env.REGISTRY}/${env.IMAGE_NS}/${svc}:${env.GIT_SHA}"
+                                def digestFile = "/workspace/digest-${svc}.txt"
+                                sh """
+                                    echo '== kaniko: ${svc} -> ${image} =='
+                                    /kaniko/executor \\
+                                      --context=\$(pwd)/${context} \\
+                                      --dockerfile=\$(pwd)/${context}/Dockerfile \\
+                                      --destination=${image} \\
+                                      --digest-file=${digestFile} \\
+                                      --cache=true
+                                """
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Publish metadata') {
+            when {
+                expression { return env.CHANGED_SERVICES?.trim() }
+            }
+            steps {
+                container('kaniko') {
+                    sh '''
+                        echo "commit=${GIT_SHA}" > build-metadata.txt
+                        for f in /workspace/digest-*.txt; do
+                            [ -f "$f" ] || continue
+                            svc=$(basename "$f" | sed 's/digest-//; s/.txt//')
+                            echo "${svc}: ${REGISTRY}/${IMAGE_NS}/${svc}:${GIT_SHA} @ $(cat $f)" >> build-metadata.txt
+                        done
+                        cat build-metadata.txt
+                    '''
+                }
+                archiveArtifacts artifacts: 'build-metadata.txt', allowEmptyArchive: true
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Сборка commit=${env.GIT_SHA} завершена со статусом ${currentBuild.currentResult}"
+        }
+    }
+}
