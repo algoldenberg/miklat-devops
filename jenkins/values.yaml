@@ -38,6 +38,26 @@ controller:
   additionalPlugins:
     - "job-dsl:3732.v9a_c49a_61a_313"
 
+  # Фаза 4, шаг 4.1: GHCR-credentials для CI как код. Реальный токен нигде
+  # в этом файле/репозитории не встречается — секрет `jenkins-ghcr-credentials`
+  # создаётся императивно (kubectl create secret), та же практика, что и
+  # `jenkins-admin-secret` на шаге 1. Здесь только ССЫЛКА на существующий
+  # secret — значения подставляются Kubernetes в под как переменные
+  # окружения, а JCasC ниже (`credentials:`) забирает их оттуда через
+  # `${GHCR_USERNAME}`/`${GHCR_TOKEN}` и создаёт из них Jenkins Credential
+  # `ghcr-credentials`, которую дальше использует `Jenkinsfile-ci`.
+  containerEnv:
+    - name: GHCR_USERNAME
+      valueFrom:
+        secretKeyRef:
+          name: jenkins-ghcr-credentials
+          key: username
+    - name: GHCR_TOKEN
+      valueFrom:
+        secretKeyRef:
+          name: jenkins-ghcr-credentials
+          key: token
+
   resources:
     requests:
       cpu: "500m"
@@ -175,6 +195,25 @@ controller:
                   }
                 }
               }
+
+      # Фаза 4, шаг 4.1: JCasC-ключ `credentials:` — отдельный корневой
+      # элемент (не `jenkins:`/`jobs:`), конфликта с ними нет (тот же
+      # принцип, что уже подтверждён на шаге 3 для `jobs:`). Создаёт Jenkins
+      # Credential `ghcr-credentials` (Username with password) из значений,
+      # которые Kubernetes уже подставил в переменные окружения пода
+      # (`containerEnv` выше) — сам токен даже транзитом не проходит через
+      # этот файл, только имена переменных.
+      ghcr-credentials: |
+        credentials:
+          system:
+            domainCredentials:
+              - credentials:
+                  - usernamePassword:
+                      scope: GLOBAL
+                      id: "ghcr-credentials"
+                      username: "${GHCR_USERNAME}"
+                      password: "${GHCR_TOKEN}"
+                      description: "GHCR push credentials for CI (dedicated fine-grained-unsupported classic PAT, scope write:packages)"
 
   persistence:
     enabled: true
