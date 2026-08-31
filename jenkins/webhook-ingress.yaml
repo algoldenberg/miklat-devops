@@ -1,0 +1,40 @@
+# jenkins/webhook-ingress.yaml
+# Фаза 4, шаг 4.2: единственная точка, где Jenkins становится видим снаружи
+# кластера — и то только этот один путь, не весь UI/API.
+#
+# Использует ТОТ ЖЕ ingress-nginx-controller, что уже поднят для приложения
+# в Фазе 3 (k8s/03-ingress-nginx-controller.yaml, NodePort 30080/30443) —
+# отдельный ingress-controller под Jenkins не поднимаем, это лишняя сущность
+# ради одного пути.
+#
+# Как это ограничивает поверхность атаки: этот Ingress не задаёт host (как и
+# k8s/04-ingress.yaml приложения) — оба живут на одном "виртуальном хосте" в
+# nginx. Контроллер сортирует пути по специфичности: `/github-webhook/`
+# (длиннее и точнее) перехватывает ТОЛЬКО запросы на этот путь, всё
+# остальное (в т.ч. `/`) как раньше уходит на catch-all приложения
+# (k8s/04-ingress.yaml → frontend). Сам Jenkins UI (`/login`, `/manage/`,
+# `/job/...`) снаружи маршрута не имеет вообще — доступен только через
+# `kubectl port-forward`, как и был.
+#
+# `/github-webhook/` (эндпоинт плагина GitHub) по своей природе не защищён
+# логином — GitHub должен уметь дёрнуть его без аутентификации. Реальная
+# защита — shared secret на стороне GitHub-плагина Jenkins (настраивается
+# отдельно на шаге 4.3): payload с неверной HMAC-подписью отклоняется, даже
+# если запрос физически дошёл до Jenkins.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: jenkins-webhook-ingress
+  namespace: jenkins
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /github-webhook/
+            pathType: Prefix
+            backend:
+              service:
+                name: jenkins
+                port:
+                  number: 8080
