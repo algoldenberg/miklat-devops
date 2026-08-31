@@ -35,6 +35,15 @@ pipeline {
         stage('Checkout') {
             steps {
                 container('git') {
+                    // Declarative Pipeline делает свой checkout ДО входа в
+                    // container('git') (другой UID), затем наш checkout scm
+                    // здесь перезаписывает файлы уже от имени UID контейнера
+                    // alpine/git — git видит смену владельца и блокирует
+                    // работу (защита от CVE-2022-24765). Помечаем workspace
+                    // безопасным один раз здесь — контейнер 'git' живёт весь
+                    // пайплайн, поэтому настройка действует и на более
+                    // поздней стадии "Detect changed services".
+                    sh 'git config --global --add safe.directory "*"'
                     checkout scm
                     script {
                         env.GIT_SHA = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
