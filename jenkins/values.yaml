@@ -123,14 +123,24 @@ rbac:
 agent:
   # Фаза 4, шаг 2: дефолтный generic jnlp pod template чарта отключён —
   # используем только два целевых template'а ниже (ci-agent/cd-agent), как
-  # того требует план. `enabled: false` убирает только сам дефолтный
-  # template, но НЕ Kubernetes Cloud целиком — она уже настроена чартом на
-  # шаге 1 (namespace `jenkins`, ServiceAccount, RBAC), наши template'ы
+  # того требует план. Kubernetes Cloud уже настроена чартом на шаге 1
+  # (namespace `jenkins`, ServiceAccount, RBAC), наши template'ы
   # регистрируются в ней же через нативный ключ `podTemplates` (в отличие от
   # кастомного JCasC configScript — это не создаёт риска конфликта, который
   # мы уже ловили на шаге 1: `podTemplates` — собственный механизм чарта,
   # а не второй независимый источник JCasC).
-  enabled: false
+  #
+  # ВАЖНО (найдено при отладке): `agent.enabled: false` — это НЕ "убрать
+  # только дефолтный template", как можно подумать по названию. Это флаг
+  # уровня "генерировать ли вообще секцию `templates:` внутри Kubernetes
+  # Cloud" — при false пропадают И дефолтный, И кастомные `podTemplates`
+  # разом (проверено по исходнику `_helpers.tpl` чарта: `podTemplates`
+  # рендерится ВНУТРИ той же ветки, что и дефолтный агент, а не отдельно).
+  # Правильная комбинация — `enabled: true` (сама секция `templates`
+  # генерируется) + `disableDefaultAgent: true` (внутри неё пропускается
+  # только автосгенерированный дефолтный template, кастомные остаются).
+  enabled: true
+  disableDefaultAgent: true
 
   # Общие для всей Kubernetes Cloud настройки (относятся ко ВСЕМ pod
   # template'ам, не только к отключённому дефолтному):
