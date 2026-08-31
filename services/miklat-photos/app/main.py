@@ -10,6 +10,12 @@ from app.database import check_connection, close_pool, init_pool
 from app.routers import admin, photos
 from app.schemas import HealthOut, ReadyOut
 
+# Фаза 4, шаг 4.5: канареечный комментарий — реального изменения нет, коммит
+# нужен только чтобы "Detect changed services" увидел miklat-photos и мы
+# впервые реально прогнали стадию Build & push (kaniko): auth в GHCR через
+# credentials-binding, генерация /kaniko/.docker/config.json, push образа.
+# Можно удалить эту строку в любой следующей правке.
+
 logger = logging.getLogger("miklat-photos")
 
 
