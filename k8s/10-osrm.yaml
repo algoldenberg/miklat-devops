@@ -35,6 +35,7 @@ spec:
         part-of: miklat
         tier: worker
     spec:
+      serviceAccountName: miklat-worker-sa
       containers:
         - name: osrm
           image: ghcr.io/project-osrm/osrm-backend

@@ -22,6 +22,7 @@ spec:
         part-of: miklat
         tier: worker
     spec:
+      serviceAccountName: miklat-worker-sa
       securityContext:
         runAsNonRoot: true
         runAsUser: 10001

@@ -726,3 +726,215 @@ IP). Все Jinja2-шаблоны (`.env.j2`, systemd-юниты, nginx-конф
 без синтаксических ошибок. Реальный прогон плейбуков на настоящих EC2 — следующий шаг, у Claude нет SSH-
 доступа к серверам пользователя (тот же принцип, что и с git push/terraform apply).
 
+## Kubernetes (Задание 3)
+
+Весь код — в `k8s/`. То же приложение, что и в Фазах 1-2, развёрнуто на **self-hosted k3s**
+(единственная нода, VPS `mbdai`, namespace `miklat-app`) — не EKS, поэтому часть решений (IAM-доступ,
+Ingress, single-node сторедж) продиктована именно этим ограничением и явно объясняется ниже.
+
+`mbdai` — тот же физический сервер, на котором уже работает реальный продакшен `shelternearyou.online`
+(отдельный Docker Compose стек). k3s установлен изолированно от него: свои порты (см. таблицу занятых
+портов ниже), свой namespace, никакие ресурсы прод-стека не создаются/не изменяются кластером.
+
+Диаграмма архитектуры (namespace/Deployment/Service/Ingress, границы public/private) — `docs/architecture-task3.md`
+(mermaid, рендерится нативно на GitHub) или `docs/architecture-task3.png`.
+
+### Файлы (`k8s/`)
+
+| Файл | Что содержит |
+|---|---|
+| `00-namespace.yaml` | Namespace `miklat-app` |
+| `01-configmap.yaml` | Несекретная конфигурация — `AWS_REGION`, URL'ы пяти сервисов, `OSRM_BASE_URL` |
+| `02-secret.example.yaml` | Шаблон Secret'а (без значений) — реальный создаётся императивно, см. "Secrets" ниже |
+| `03-ingress-nginx-controller.yaml` | Официальный bare-metal манифест ingress-nginx `controller-v1.15.1`, без изменений кроме явных `nodePort` |
+| `04-ingress.yaml` | Единственное правило маршрутизации: `/` → `frontend:8080` |
+| `05-serviceaccounts.yaml` | 3 ServiceAccount (по одному на группу сервисов) — см. "Security" ниже |
+| `10-osrm.yaml` | Deployment+Service стороннего образа OSRM (пеший граф Израиля/Палестины) |
+| `11-miklat-service.yaml` … `17-frontend.yaml` | По одному Deployment+Service на каждый из 7 собственных сервисов |
+
+Нумерация файлов задаёт порядок применения (`00` → `01` → … → `17`) — зависимости (например, `osrm`
+раньше `miklat-routes`/`miklat-walking-routes`) выдерживаются просто порядком имён.
+
+### Образы: сборка и публикация (GHCR)
+
+Все 7 Dockerfile'ов унаследованы из Фазы 1 без изменений — уже соответствовали требованиям задания:
+фиксированные базовые образы без `latest` (`python:3.12-slim`, `nginx:1.27-alpine`), non-root пользователь
+(`USER miklat`/`USER nginx`), `.dockerignore` исключает `.venv`/`.env`/`tests`/`__pycache__`.
+
+```bash
+# тег = короткий commit-SHA текущего HEAD, не latest
+TAG=$(git rev-parse --short HEAD)
+docker login ghcr.io -u <github-username>
+
+for svc in frontend miklat-gateway miklat-service miklat-comments \
+           miklat-routes miklat-walking-routes miklat-photos; do
+  docker build -t ghcr.io/<github-username>/$svc:$TAG ./services/$svc   # frontend — из ./frontend
+  docker push ghcr.io/<github-username>/$svc:$TAG
+done
+```
+
+Пакеты в GHCR — **публичные** (Package settings → Danger Zone → Change visibility → Public) — осознанное
+решение: Deployment'ам не нужны `imagePullSecrets`, что проще для self-hosted k3s без внешнего secret-
+менеджера; Jenkins в Задании 4 при этом всё равно публикует туда через свой собственный токен.
+
+### Развёртывание
+
+```bash
+# на mbdai, из корня репозитория
+sudo k3s kubectl apply -f k8s/00-namespace.yaml -f k8s/01-configmap.yaml -f k8s/05-serviceaccounts.yaml
+
+# Secret создаётся ИМПЕРАТИВНО, не из файла — см. "Secrets management" ниже
+sudo k3s kubectl create secret generic miklat-secrets -n miklat-app \
+  --from-literal=DATABASE_URL='postgresql://...' \
+  --from-literal=ADMIN_API_KEY='...' \
+  --from-literal=AWS_ACCESS_KEY_ID='...' \
+  --from-literal=AWS_SECRET_ACCESS_KEY='...' \
+  --from-literal=SNS_TOPIC_ARN='arn:aws:sns:...' \
+  --from-literal=S3_BUCKET_NAME='...'
+
+sudo k3s kubectl apply -f k8s/10-osrm.yaml \
+  -f k8s/11-miklat-service.yaml -f k8s/12-miklat-comments.yaml \
+  -f k8s/13-miklat-routes.yaml -f k8s/14-miklat-walking-routes.yaml \
+  -f k8s/15-miklat-photos.yaml -f k8s/16-miklat-gateway.yaml \
+  -f k8s/17-frontend.yaml
+
+sudo k3s kubectl apply -f k8s/03-ingress-nginx-controller.yaml
+sudo k3s kubectl apply -f k8s/04-ingress.yaml
+```
+
+Проверка:
+
+```bash
+sudo k3s kubectl get pods -n miklat-app          # все 8 — 1/1 Running
+sudo k3s kubectl get pods -n ingress-nginx        # controller — 1/1 Running
+sudo k3s kubectl get ingress -n miklat-app        # miklat-ingress, класс nginx
+
+curl http://localhost:30080/                      # HTML фронтенда
+curl "http://localhost:30080/api/miklats?limit=3" # реальные сид-данные через Ingress→frontend→gateway→service
+```
+
+Удаление:
+
+```bash
+sudo k3s kubectl delete namespace miklat-app ingress-nginx
+```
+
+### Подключение к RDS/S3/SNS
+
+Приложение обращается к тем же самым AWS RDS/S3/SNS, которые созданы Terraform в Задании 2 (регион
+`il-central-1`, ресурсы с суффиксом `-tf`) — никакой отдельной инфраструктуры под Kubernetes не заводилось.
+
+RDS изначально создавался с `publicly_accessible = false` (Задание 2, приложение внутри VPC). Так как
+`mbdai` — VPS вне VPC, для доступа снаружи пришлось (а) добавить в `aws_security_group.rds` отдельное
+CIDR-правило на публичный IP `mbdai` и (б) переключить `publicly_accessible` на `true` — без этого DNS-имя
+RDS резолвится только в приватный IP, физически недостижимый снаружи VPC никаким SG-правилом. Реальная
+защита осталась на security group (сужена до конкретных SG изнутри VPC + один `/32` снаружи, не
+`0.0.0.0/0`).
+
+k3s работает вне AWS — значит, недоступен IRSA (IAM Roles for Service Accounts), которым в EKS обычно
+решают доступ подов к S3/SNS без статических ключей. Вместо этого создан отдельный ограниченный
+IAM-пользователь `miklat-k8s` (только `s3:PutObject/GetObject/DeleteObject/ListBucket` на бакет фото,
+`sns:Publish/GetTopicAttributes` на топик уведомлений) со статическим access key — компромисс, прямо
+предусмотренный заданием для не-EKS кластеров, задокументирован здесь и в `miklat-secrets` ниже.
+
+### Security
+
+#### Разделение прав / ServiceAccount (`05-serviceaccounts.yaml`)
+
+Три ServiceAccount — по одному на логическую группу сервисов (`miklat-frontend-sa`, `miklat-backend-sa`,
+`miklat-worker-sa`), та же группировка, что и в security groups Terraform Задания 2. Ни один из 8
+workload'ов не привязан к `default` ServiceAccount namespace'а.
+
+#### RBAC
+
+Ни один из 8 сервисов проекта не обращается к Kubernetes API изнутри пода — все они обычные HTTP-сервисы
+(FastAPI/nginx/OSRM), которые общаются друг с другом и с внешними AWS/RDS, а не с control plane кластера.
+Поэтому «минимальные права» здесь означают буквально **ноль прав к API**, а не урезанный, но ненулевой
+набор `verbs`/`resources`:
+
+- на каждом ServiceAccount выставлен `automountServiceAccountToken: false` — под даже не получает токен
+  для обращения к API-серверу (это сильнее, чем просто ограничить права токеном — сама возможность
+  запроса исключена);
+- ни один из трёх ServiceAccount не привязан ни к одной Role/ClusterRole — RoleBinding с реальными правами
+  сознательно не создавались, т.к. создавать Role, права которой ничем не используются, противоречило бы
+  самому принципу наименьших привилегий;
+- `cluster-admin` или любая другая широкая роль нигде в проекте не используется.
+
+Разделение на 3 ServiceAccount при этом остаётся осмысленным даже без явных прав — это чёткая идентичность
+в `kubectl describe pod`/аудит-логах (видно принадлежность к группе не только по лейблу) и готовый задел:
+если в будущем какой-то группе понадобится точечный доступ к API, у неё уже есть отдельная идентичность,
+к которой можно привязать Role, не трогая остальные две группы.
+
+#### Secrets management
+
+Секреты (пароль RDS, `ADMIN_API_KEY`, access key/secret IAM-пользователя `miklat-k8s`, SNS ARN, имя S3-
+бакета) хранятся как стандартный Kubernetes `Secret` (`Opaque`, 6 ключей), подставляются в переменные
+окружения контейнеров точечно через `secretKeyRef` (не бланкетным `envFrom` — уже сама эта деталь сужает,
+какие переменные видит каждый под). В Git — только `k8s/02-secret.example.yaml` с плейсхолдерами; реальный
+Secret создаётся императивной командой `kubectl create secret generic --from-literal=...` прямо на
+`mbdai` и никогда не существовал в виде файла на диске.
+
+Это базовый уровень (K8s Secret), без внешнего secret-менеджера (бонус External Secrets Operator/AWS
+Secrets Manager сознательно не делался — за пределами обязательного минимума задания).
+
+#### Network security
+
+Схема обращений: `frontend` (единственный, кто виден снаружи, через Ingress) → `miklat-gateway` →
+{`miklat-service`, `miklat-comments`, `miklat-routes`, `miklat-walking-routes`, `miklat-photos`}; сервисы
+worker-группы дополнительно обращаются к RDS/S3/SNS напрямую (не через шлюз); `miklat-routes`/
+`miklat-walking-routes` — к `osrm`. Все Service, кроме `frontend`, — `ClusterIP` без внешнего доступа;
+единственная внешняя точка входа в кластер — `Ingress` → `frontend:8080` на `NodePort 30080`/`30443`.
+
+`NetworkPolicy` (бонус) сознательно не реализован в этой итерации: k3s по умолчанию ставится с CNI
+`flannel`, который манифесты `NetworkPolicy` принимает, но **не enforce'ит** (не блокирует трафик по ним
+реально) — для настоящего эффекта потребовалась бы замена CNI на Calico/Canal, это более крупное изменение
+кластера, оставлено как возможное дальнейшее улучшение. Базовая сегрегация трафика на сегодня обеспечена
+структурно — типом Service (`ClusterIP` vs единственный `Ingress`), а не netfilter-правилами.
+
+#### Container security
+
+У всех 8 подов: `allowPrivilegeEscalation: false` и `capabilities: drop: ["ALL"]` на уровне контейнера. У
+7 собственных сервисов (не OSRM) — `runAsNonRoot: true` на уровне пода: 5 python-сервисов с явным
+`runAsUser: 10001` (совпадает с `useradd --uid 10001` в их Dockerfile), `frontend` — с `runAsUser: 101`
+(стандартный UID пользователя `nginx` во всех вариантах официального образа `nginx:*-alpine`, задан самим
+образом). Единственное исключение — `osrm`: сторонний официальный образ `ghcr.io/project-osrm/osrm-backend`
+работает от root и не предоставляет непривилегированного пользователя, Dockerfile не наш — задокументировано
+как ограничение, а не забытая деталь. У всех 8 — `resources.requests/limits` и `readinessProbe`/
+`livenessProbe`.
+
+#### Image security
+
+Собственные Dockerfile на все 7 сервисов (не сторонние базовые образы "как есть"), фиксированные теги —
+короткий commit-SHA текущего HEAD, `latest` нигде не используется (в т.ч. и у `osrm`, где используется
+тег по умолчанию, но не обновляется без явного пересмотра — образ сторонний и не пересобирается). Сканиро-
+вание образов через Trivy (бонус) в этой итерации не делалось — оставлено как возможное дальнейшее
+улучшение, самый простой способ добавить: `trivy image ghcr.io/<user>/<service>:<tag>` на каждый из 7
+образов, вывод — в `docs/evidence/task3/`.
+
+#### Ingress security
+
+Ingress пока обслуживает только HTTP (без TLS) — домен ещё не выбран, cert-manager + Let's Encrypt (бонус)
+осознанно отложены на финальный этап проекта, когда появится реальный поддомен (тот же принцип, что и
+отложенное решение проблемы Geolocation API без HTTPS во фронтенде, см. журнал Фазы 2). Публикация — через
+`NodePort 30080`/`30443` вместо стандартных `80`/`443`: эти два порта уже заняты продакшен-nginx на том же
+физическом сервере `mbdai` — задокументированный компромисс, а не забытая деталь (аналог решения "без NAT
+Gateway" в Terraform Задания 2). Разделение public/internal трафика: наружу открыт только `frontend` через
+`Ingress`, все остальные 7 сервисов — только `ClusterIP`, недостижимы снаружи кластера в принципе.
+
+### Известные компромиссы (trade-offs)
+
+- **Self-hosted k3s, не EKS** — отсюда отсутствие IRSA (статический IAM-пользователь `miklat-k8s` вместо
+  роли) и отсутствие облачного LoadBalancer (Ingress через `NodePort`).
+- **Single-node кластер** — данные графа OSRM (~890 МБ) подключены через `hostPath`, а не сетевой
+  `PersistentVolume`: под физически не может мигрировать на другую ноду, которой попросту нет.
+- **ingress-nginx (`kubernetes/ingress-nginx`) заархивирован апстримом** 24.03.2026 (подтверждено веб-
+  поиском) — выбран сознательно, пин на последний стабильный релиз `controller-v1.15.1`: задание требует
+  лишь «nginx ingress controller», выпущенные артефакты остаются полностью рабочими.
+- **`mbdai` — общий сервер с реальным продакшеном** `shelternearyou.online` (отдельный Docker Compose
+  стек) — весь Kubernetes-стенд изолирован от него по портам/namespace и ни разу не затрагивал его
+  ресурсы, включая при отдельном инфраструктурном инциденте с нехваткой памяти на хосте (см. `miklat-
+  progress.md`), устранённом без какого-либо вмешательства в прод.
+- **NetworkPolicy, Trivy-скан, cert-manager+TLS** — три официальных бонуса задания, сознательно не
+  реализованы в этой итерации (см. обоснование в соответствующих Security-подразделах выше), оставлены
+  как возможные дальнейшие улучшения.
+
