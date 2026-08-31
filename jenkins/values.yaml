@@ -89,14 +89,20 @@ controller:
   # JCasC: минимальный скелет на шаг 1 (только системные настройки), без
   # security-realm/credentials-специфики — она добавится в шаге 7 (Security),
   # когда будем явно разводить RBAC/credentials под CI и CD.
+  #
+  # Важно: `numExecutors`/`mode` здесь НЕ дублируем — чарт сам генерирует
+  # собственный служебный jcasc-default-config.yaml из controller.numExecutors,
+  # и повторное указание того же ключа в кастомном configScript ловится
+  # плагином configuration-as-code как КОНФЛИКТ (ErrorOnConflictMergeStrategy),
+  # даже если значение совпадает — Jenkins из-за этого падал при старте
+  # (ConfiguratorConflictException на строке `mode: NORMAL`). Здесь оставляем
+  # только то, что больше нигде не задаётся.
   JCasC:
     defaultConfig: true
     configScripts:
       basic-settings: |
         jenkins:
           systemMessage: "miklat-devops CI/CD — Jenkins управляется через JCasC, Helm values в Git, ручная настройка через UI не используется."
-          numExecutors: 0
-          mode: EXCLUSIVE
 
   persistence:
     enabled: true
