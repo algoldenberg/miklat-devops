@@ -32,6 +32,12 @@ controller:
   # снижает нагрузку/риски на под, который держит state (PVC).
   numExecutors: 0
 
+  # Фаза 4, шаг 3: плагин Job DSL — единственный плагин сверх дефолтного
+  # набора чарта, нужен, чтобы описать job'ы `miklat-ci`/`miklat-cd` кодом
+  # (JCasC-ключ `jobs:` ниже), а не создавать их руками через UI.
+  additionalPlugins:
+    - "job-dsl:3732.v9a_c49a_61a_313"
+
   resources:
     requests:
       cpu: "500m"
@@ -103,6 +109,54 @@ controller:
       basic-settings: |
         jenkins:
           systemMessage: "miklat-devops CI/CD — Jenkins управляется через JCasC, Helm values в Git, ручная настройка через UI не используется."
+
+      # Фаза 4, шаг 3: Jobs как код через плагин Job DSL. Ключ `jobs:` —
+      # отдельный корневой JCasC-элемент (не `jenkins:`), поэтому конфликта
+      # со скриптом `basic-settings` выше нет — это два разных ключа верхнего
+      # уровня, а не два источника для ОДНОГО и того же поля (тот класс
+      # проблемы мы уже ловили на шаге 1 и знаем, как он выглядит).
+      # Скрипт выполняется при каждом старте/reload контроллера — job'ы
+      # создаются/обновляются автоматически, без seed-job'а, который нужно
+      # было бы руками запускать через UI ("Build Now").
+      # ВАЖНО: сами файлы `Jenkinsfile-ci`/`Jenkinsfile-cd` в репозитории
+      # ещё не существуют (это шаги 4 и 5) — job'ы уже сейчас определены и
+      # видны в Jenkins, но соберутся успешно только после появления этих
+      # файлов. Это ожидаемо и не является ошибкой этого шага.
+      seed-jobs: |
+        jobs:
+          - script: >
+              pipelineJob('miklat-ci') {
+                description('CI: checkout, validate, lint, tests, build & push образов в GHCR. Управляется как код (Job DSL) — не редактировать через UI.')
+                definition {
+                  cpsScm {
+                    scm {
+                      git {
+                        remote { url('https://github.com/algoldenberg/miklat-devops.git') }
+                        branch('main')
+                      }
+                    }
+                    scriptPath('Jenkinsfile-ci')
+                  }
+                }
+              }
+              pipelineJob('miklat-cd') {
+                description('CD: деплой готового образа (по tag/digest) в namespace miklat-app. Управляется как код (Job DSL) — не редактировать через UI.')
+                parameters {
+                  stringParam('IMAGE_TAG', '', 'Тег образа (commit-SHA), собранный джобом miklat-ci')
+                  stringParam('IMAGE_DIGEST', '', 'Digest образа для доп. traceability (необязательно)')
+                }
+                definition {
+                  cpsScm {
+                    scm {
+                      git {
+                        remote { url('https://github.com/algoldenberg/miklat-devops.git') }
+                        branch('main')
+                      }
+                    }
+                    scriptPath('Jenkinsfile-cd')
+                  }
+                }
+              }
 
   persistence:
     enabled: true
