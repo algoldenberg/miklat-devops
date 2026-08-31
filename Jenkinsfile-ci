@@ -18,7 +18,11 @@ pipeline {
     agent { label 'ci-agent' }
 
     options {
-        timestamps()
+        // timestamps() убран: это опция плагина Timestamper, которого нет в
+        // additionalPlugins (см. jenkins/values.yaml) — без него Jenkins не
+        // может распарсить options{} и падает ещё до checkout. Добавлять
+        // отдельный плагин ради меток времени в логе не стали (см. журнал
+        // прогресса, шаг 4.4) — чисто косметика, план этого не требует.
         timeout(time: 30, unit: 'MINUTES')
     }
 
