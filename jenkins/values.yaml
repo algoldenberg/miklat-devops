@@ -1,0 +1,129 @@
+# jenkins/values.yaml
+# Задание 4, Фаза 4, шаг 1: Jenkins-контроллер в Kubernetes (namespace `jenkins`).
+# Официальный Helm-чарт jenkinsci/jenkins, версия зафиксирована при установке
+# явным флагом `--version 5.9.29` (не "последняя доступная на момент apply").
+# Образ Jenkins тоже зафиксирован ниже — конкретный LTS-тег, не latest/lts alias.
+#
+# Что делает этот файл (шаг 1, по плану): только сам контроллер — под, PVC,
+# ресурсы, пробы, security context, ClusterIP-сервис, минимальный JCasC-скелет.
+# Agent pod template'ы (ci-agent/cd-agent, kaniko вместо Docker socket) —
+# отдельный шаг 2. Seed job / Job DSL (создание miklat-ci/miklat-cd без UI) —
+# отдельный шаг 3. Наружу (Ingress/webhook) Jenkins пока НЕ публикуется —
+# это решение шага про CI-триггер (шаг 4), сейчас доступ только через
+# `kubectl port-forward` для первичной проверки/логина.
+
+controller:
+  image:
+    registry: docker.io
+    repository: jenkins/jenkins
+    tag: "2.555.3-lts-jdk21"       # зафиксированная LTS-версия, не "lts"/"latest"
+  imagePullPolicy: IfNotPresent
+
+  # Учётка администратора: секрет создаётся пользователем императивно (см.
+  # инструкцию в чате) — реальный пароль нигде не пишется ни в этот файл,
+  # ни в репозиторий, по аналогии с miklat-secrets в Фазе 3.
+  admin:
+    existingSecret: jenkins-admin-secret
+    userKey: jenkins-admin-user
+    passwordKey: jenkins-admin-password
+
+  # Контроллер сам ничего не билдит — он только диспетчер, реальные сборки
+  # всегда идут на динамических agent'ах (Kubernetes plugin, шаг 2). Это же
+  # снижает нагрузку/риски на под, который держит state (PVC).
+  numExecutors: 0
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+  serviceType: ClusterIP
+  ingress:
+    enabled: false
+
+  # Явные пробы вместо чартовых дефолтов — требование плана (Задание 3 уже
+  # приучило нас всегда задавать resources+probes явно, тот же принцип здесь).
+  probes:
+    startupProbe:
+      httpGet:
+        path: /login
+        port: http
+      failureThreshold: 60
+      periodSeconds: 5
+      timeoutSeconds: 5
+    livenessProbe:
+      httpGet:
+        path: /login
+        port: http
+      periodSeconds: 10
+      failureThreshold: 5
+      timeoutSeconds: 5
+    readinessProbe:
+      httpGet:
+        path: /login
+        port: http
+      periodSeconds: 10
+      failureThreshold: 3
+      timeoutSeconds: 5
+
+  # Container security — тот же принцип, что и в Фазе 3 (runAsNonRoot,
+  # без privilege escalation). uid 1000 — штатный jenkins-пользователь
+  # официального образа, ничего кастомного.
+  containerSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+
+  podSecurityContextOverride:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    fsGroup: 1000
+
+  # JCasC: минимальный скелет на шаг 1 (только системные настройки), без
+  # security-realm/credentials-специфики — она добавится в шаге 7 (Security),
+  # когда будем явно разводить RBAC/credentials под CI и CD.
+  JCasC:
+    defaultConfig: true
+    configScripts:
+      basic-settings: |
+        jenkins:
+          systemMessage: "miklat-devops CI/CD — Jenkins управляется через JCasC, Helm values в Git, ручная настройка через UI не используется."
+          numExecutors: 0
+          mode: EXCLUSIVE
+
+  persistence:
+    enabled: true
+    storageClass: local-path     # штатный default StorageClass в k3s
+    size: 8Gi
+
+# Kubernetes plugin (chart ставит его сам) — это ЕДИНСТВЕННЫЙ компонент во
+# всём проекте, которому реально нужны права в K8s API (создавать/удалять
+# agent-поды в namespace `jenkins`), в отличие от Фазы 3, где все 8 сервисов
+# приложения сознательно получили нулевой RBAC. Здесь чарт по умолчанию
+# создаёт узкую Role, ограниченную namespace `jenkins` (не ClusterRole,
+# никакого cluster-admin) — подробное обоснование пойдёт в README (шаг 7,
+# Security), сейчас оставляем чартовый дефолт.
+rbac:
+  create: true
+  readSecrets: false
+
+agent:
+  image:
+    repository: jenkins/inbound-agent
+    tag: "3355.v388858a_47b_33-23"   # зафиксированная версия базового agent-образа
+  resources:
+    requests:
+      cpu: "250m"
+      memory: "512Mi"
+    limits:
+      cpu: "500m"
+      memory: "1Gi"
+  podRetention: Never
+  containerCap: 5
