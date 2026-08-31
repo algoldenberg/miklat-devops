@@ -64,6 +64,14 @@ controller:
         secretKeyRef:
           name: jenkins-ghcr-credentials
           key: token
+    # Фаза 4, шаг 4.3: shared secret для проверки подписи GitHub webhook
+    # (X-Hub-Signature-256) — тот же принцип, что и GHCR-токен выше: значение
+    # только в k8s Secret, сюда попадает только имя переменной.
+    - name: GITHUB_WEBHOOK_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: jenkins-github-webhook-secret
+          key: secret
 
   resources:
     requests:
@@ -171,6 +179,9 @@ controller:
           - script: |
               pipelineJob('miklat-ci') {
                 description('CI: checkout, validate, lint, tests, build & push образов в GHCR. Управляется как код (Job DSL) — не редактировать через UI.')
+                triggers {
+                  githubPush()
+                }
                 definition {
                   cpsScm {
                     scm {
@@ -203,14 +214,19 @@ controller:
                 }
               }
 
-      # Фаза 4, шаг 4.1: JCasC-ключ `credentials:` — отдельный корневой
+      # Фаза 4, шаги 4.1+4.3: JCasC-ключ `credentials:` — отдельный корневой
       # элемент (не `jenkins:`/`jobs:`), конфликта с ними нет (тот же
-      # принцип, что уже подтверждён на шаге 3 для `jobs:`). Создаёт Jenkins
-      # Credential `ghcr-credentials` (Username with password) из значений,
-      # которые Kubernetes уже подставил в переменные окружения пода
-      # (`containerEnv` выше) — сам токен даже транзитом не проходит через
-      # этот файл, только имена переменных.
-      ghcr-credentials: |
+      # принцип, что уже подтверждён на шаге 3 для `jobs:`). ОБА credential'а
+      # (GHCR push и GitHub webhook secret) — в ОДНОМ конфиг-скрипте: если бы
+      # они лежали в двух РАЗНЫХ configScripts, каждый со своим корневым
+      # ключом `credentials:`, это был бы ровно тот конфликт двух источников
+      # одного ключа, что уже уронил Jenkins на шаге 1
+      # (ErrorOnConflictMergeStrategy) — внутри одного скрипта список из
+      # нескольких credential'ов, наоборот, штатный и ожидаемый способ
+      # использования JCasC. Оба значения приходят из переменных окружения
+      # пода (`containerEnv` выше, из k8s Secret) — сами секреты даже
+      # транзитом не проходят через этот файл, только имена переменных.
+      ci-credentials: |
         credentials:
           system:
             domainCredentials:
@@ -221,6 +237,27 @@ controller:
                       username: "${GHCR_USERNAME}"
                       password: "${GHCR_TOKEN}"
                       description: "GHCR push credentials for CI (dedicated fine-grained-unsupported classic PAT, scope write:packages)"
+                  - string:
+                      scope: GLOBAL
+                      id: "github-webhook-secret"
+                      secret: "${GITHUB_WEBHOOK_SECRET}"
+                      description: "GitHub webhook shared secret (validates X-Hub-Signature-256 on /github-webhook/)"
+
+      # Фаза 4, шаг 4.3: подключаем этот credential к самому GitHub-плагину,
+      # чтобы Jenkins реально проверял подпись входящих POST на
+      # /github-webhook/ и отклонял payload с неверным secret'ом — без этого
+      # эндпоинт принимал бы ЛЮБОЙ POST, пришедший на публичный путь из
+      # шага 4.2, без проверки, что он реально от GitHub. Ключ верхнего
+      # уровня `unclassified` — снова отдельный корень, конфликта с
+      # `jenkins:`/`jobs:`/`credentials:` нет. Синтаксис (`githubpluginconfig`
+      # в нижнем регистре, `hookSecretConfigs` как СПИСОК) сверен с
+      # исходником плагина (`GitHubPluginConfig.java`/тестовым JCasC-фикстуром
+      # в репозитории jenkinsci/github-plugin), не угадан.
+      github-webhook-secret-config: |
+        unclassified:
+          githubpluginconfig:
+            hookSecretConfigs:
+              - credentialsId: "github-webhook-secret"
 
   persistence:
     enabled: true
