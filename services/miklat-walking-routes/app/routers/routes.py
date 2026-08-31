@@ -1,7 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app import crud, osrm_client
-from app.schemas import LonLat, RouteOut, RouteRequest
+from app.schemas import RouteOut, RouteRequest
 
 router = APIRouter(tags=["walking-routes"])
 

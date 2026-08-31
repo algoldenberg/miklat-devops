@@ -1,6 +1,5 @@
 """SQL-запросы miklat-comments. Явные, без ORM (тот же подход, что в miklat-service)."""
 
-from typing import Optional
 
 from fastapi import HTTPException, status
 

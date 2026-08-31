@@ -85,7 +85,6 @@ def nearest_miklats(
     conditions = ["is_verified = TRUE"]
     params: list = []
 
-    distance_filter = ""
     if max_distance_m is not None:
         conditions.append("ST_DWithin(geom, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s)")
         params.extend([lon, lat, max_distance_m])
@@ -246,7 +245,7 @@ def approve_submission(submission_id: int, reviewed_by: str) -> dict:
         submission = _get_submission_for_update(cur, submission_id)
 
         cur.execute(
-            f"""
+            """
             INSERT INTO miklats (name, address, geom, type, capacity, description, is_verified)
             VALUES (%s, %s, ST_SetSRID(ST_MakePoint(%s, %s), 4326)::geography, %s, %s, %s, TRUE)
             RETURNING id;
