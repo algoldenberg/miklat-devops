@@ -1,0 +1,28 @@
+# Ingress для приложения miklat — единственная точка входа в кластер снаружи
+# (п.6 плана Фазы 3). Маршрутизирует ВСЁ на frontend (порт 8080) — сам
+# frontend уже проксирует "/api/*" на miklat-gateway ВНУТРИ своего образа
+# (nginx.conf, зашито на этапе сборки в Фазе 1), поэтому отдельное правило
+# "/api -> gateway" здесь не нужно и было бы дублированием той же логики в
+# двух местах. Домен ещё не выбран (см. miklat-progress.md) — правило без
+# host, ловит любой Host-заголовок, пока доступ идёт по IP:NodePort
+# (http://mbdai:30080/). Когда появится домен — сюда добавится `host:` и,
+# отдельным шагом (не в этом файле), TLS через cert-manager (бонус п.10).
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: miklat-ingress
+  namespace: miklat-app
+  labels:
+    app.kubernetes.io/part-of: miklat
+spec:
+  ingressClassName: nginx
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 8080
