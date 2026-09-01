@@ -80,7 +80,7 @@ pipeline {
                           --namespace ${NAMESPACE} \\
                           --reuse-values \\
                           --set ${env.CHART_VALUE_KEY}.imageTag=${params.IMAGE_TAG} \\
-                          --dry-run
+                          --dry-run=client
                     """
                 }
             }
@@ -96,10 +96,17 @@ pipeline {
                     // in-cluster config. Явная проверка здесь — чтобы упасть
                     // быстро и понятно при проблеме с правами, а не посреди
                     // helm upgrade.
-                    sh """
-                        kubectl auth can-i update deployments -n ${NAMESPACE}
-                        kubectl get ns ${NAMESPACE}
-                    """
+                    //
+                    // НЕ добавляем сюда `kubectl get ns ${NAMESPACE}` (было
+                    // в первой версии и реально сломало первый прогон,
+                    // 01.09.2026): Namespace — cluster-scoped ресурс, и Role
+                    // jenkins-cd (jenkins/cd-rbac.yaml) намеренно НЕ даёт
+                    // прав на него — сам Namespace принципиально не входит
+                    // в зону ответственности этого Helm-чарта (см.
+                    // helm/miklat-app/README.md). `kubectl auth can-i` уже
+                    // проверяет ровно то, что реально нужно для деплоя
+                    // (deployments), без раздувания прав ради самопроверки.
+                    sh "kubectl auth can-i update deployments -n ${NAMESPACE}"
                 }
             }
         }
