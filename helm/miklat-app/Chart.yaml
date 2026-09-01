@@ -1,0 +1,18 @@
+# Helm chart для приложения miklat (Задание 3 — манифесты; Задание 4, шаг 5 —
+# обёрнуты в Helm специально ради Jenkinsfile-cd: `helm upgrade --install` +
+# `helm rollback` вместо голого kubectl apply/set image).
+#
+# Namespace `miklat-app`, ServiceAccount'ы, Deployment/Service на каждый из
+# 8 workload'ов и Ingress перенесены сюда практически без изменений из
+# k8s/*.yaml (Фаза 3) — только image/tag стали значениями values.yaml.
+# Namespace САМ по себе НЕ включён в чарт (см. README чарта) — уже создан
+# вручную, управлять им через Helm рискованно (`helm uninstall` удалил бы
+# namespace целиком). Secret (`miklat-secrets`) тоже НЕ в чарте — секреты
+# как и раньше создаются императивно, чарт их не трогает и не знает о них
+# ничего, кроме имени по которому ссылается (secretKeyRef).
+apiVersion: v2
+name: miklat-app
+description: Приложение miklat (ShelterNearYou, учебная копия) на k3s
+type: application
+version: 0.1.0
+appVersion: "1.0"

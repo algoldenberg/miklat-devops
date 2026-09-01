@@ -1,0 +1,97 @@
+# Перенесено из k8s/16-miklat-gateway.yaml — image/tag стали значениями,
+# namespace стал {{ .Release.Namespace }}, остальное без изменений.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miklat-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: miklat-gateway
+    part-of: miklat
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: miklat-gateway
+  template:
+    metadata:
+      labels:
+        app: miklat-gateway
+        part-of: miklat
+        tier: backend
+    spec:
+      serviceAccountName: miklat-backend-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: miklat-gateway
+          image: "{{ .Values.imageRegistry }}/miklat-gateway:{{ .Values.miklatGateway.imageTag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: MIKLAT_SERVICE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: miklat-config
+                  key: MIKLAT_SERVICE_URL
+            - name: MIKLAT_COMMENTS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: miklat-config
+                  key: MIKLAT_COMMENTS_URL
+            - name: MIKLAT_ROUTES_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: miklat-config
+                  key: MIKLAT_ROUTES_URL
+            - name: MIKLAT_WALKING_ROUTES_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: miklat-config
+                  key: MIKLAT_WALKING_ROUTES_URL
+            - name: MIKLAT_PHOTOS_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: miklat-config
+                  key: MIKLAT_PHOTOS_URL
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: miklat-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: miklat-gateway
+spec:
+  type: ClusterIP
+  selector:
+    app: miklat-gateway
+  ports:
+    - port: 8000
+      targetPort: 8000

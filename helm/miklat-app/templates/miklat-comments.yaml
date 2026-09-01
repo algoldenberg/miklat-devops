@@ -1,0 +1,82 @@
+# Перенесено из k8s/12-miklat-comments.yaml — image/tag стали значениями,
+# namespace стал {{ .Release.Namespace }}, остальное без изменений.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: miklat-comments
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: miklat-comments
+    part-of: miklat
+    tier: backend
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: miklat-comments
+  template:
+    metadata:
+      labels:
+        app: miklat-comments
+        part-of: miklat
+        tier: backend
+    spec:
+      serviceAccountName: miklat-backend-sa
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+      containers:
+        - name: miklat-comments
+          image: "{{ .Values.imageRegistry }}/miklat-comments:{{ .Values.miklatComments.imageTag }}"
+          imagePullPolicy: IfNotPresent
+          ports:
+            - containerPort: 8000
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: DATABASE_URL
+            - name: ADMIN_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: miklat-secrets
+                  key: ADMIN_API_KEY
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "64Mi"
+            limits:
+              cpu: "250m"
+              memory: "256Mi"
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 15
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: miklat-comments
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: miklat-comments
+spec:
+  type: ClusterIP
+  selector:
+    app: miklat-comments
+  ports:
+    - port: 8000
+      targetPort: 8000

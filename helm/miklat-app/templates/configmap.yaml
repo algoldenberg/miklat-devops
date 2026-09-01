@@ -1,0 +1,16 @@
+# Перенесено из k8s/01-configmap.yaml без изменений содержимого — только
+# namespace стал {{ .Release.Namespace }}. URL-ы построены на именах Service,
+# создаваемых этим же чартом ниже.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: miklat-config
+  namespace: {{ .Release.Namespace }}
+data:
+  AWS_REGION: "il-central-1"
+  MIKLAT_SERVICE_URL: "http://miklat-service:8000"
+  MIKLAT_COMMENTS_URL: "http://miklat-comments:8000"
+  MIKLAT_ROUTES_URL: "http://miklat-routes:8000"
+  MIKLAT_WALKING_ROUTES_URL: "http://miklat-walking-routes:8000"
+  MIKLAT_PHOTOS_URL: "http://miklat-photos:8000"
+  OSRM_BASE_URL: "http://osrm:5000"

@@ -1,0 +1,30 @@
+# Единый реестр образов — конкретный тег переопределяется по сервису.
+# Jenkinsfile-cd переопределяет тег ТОЛЬКО у изменившегося сервиса через
+# `--reuse-values --set <service>.imageTag=<GIT_SHA>` — соседние сервисы
+# остаются на тех тегах, что уже были задеплоены (reuse-values берёт их из
+# предыдущего релиза, а не из этого файла заново).
+imageRegistry: ghcr.io/algoldenberg
+
+# Значения ниже — это стартовая точка (тег, с которым чарт мигрирует
+# существующий деплой при первом `helm upgrade --install`, см. журнал
+# прогресса, Фаза 4 шаг 5.1) — тот же тег, что уже реально запущен в
+# кластере на момент миграции, чтобы миграция не вызвала ненужный rollout.
+miklatService:
+  imageTag: 7fb370d
+miklatComments:
+  imageTag: 7fb370d
+miklatRoutes:
+  imageTag: 7fb370d
+miklatWalkingRoutes:
+  imageTag: 7fb370d
+miklatPhotos:
+  imageTag: 7fb370d
+miklatGateway:
+  imageTag: 7fb370d
+frontend:
+  imageTag: 7fb370d
+
+# OSRM — сторонний образ, не наш код, не деплоится через CI/CD этого
+# проекта, тег/пин образа тут статичен и не параметризуется по релизам.
+osrm:
+  image: ghcr.io/project-osrm/osrm-backend
