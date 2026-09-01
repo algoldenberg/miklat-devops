@@ -1,0 +1,66 @@
+# Фаза 4, шаг 5.2 — ServiceAccount + RBAC для Jenkinsfile-cd.
+#
+# ServiceAccount живёт в namespace jenkins (там же, где реально работает
+# cd-agent под), а права на управление ресурсами выданы точечно в
+# namespace miklat-app через RoleBinding с subject из ДРУГОГО namespace —
+# штатный механизм Kubernetes RBAC, ClusterRole/cluster-admin не нужны.
+#
+# miklat-ci (Jenkinsfile-ci, ci-agent) НИКАК не упомянут здесь и продолжает
+# работать под дефолтным jenkins SA без единого разрешения к API кластера —
+# именно то разделение прав CI/CD, которое требует план (Фаза 4, п.7).
+#
+# Область прав Role ниже намеренно ограничена ресурсами, которыми реально
+# управляет Helm chart miklat-app (ServiceAccount/ConfigMap/Deployment/
+# Service/Ingress) + pods (для kubectl rollout status/logs и smoke-test) +
+# secrets. Secrets — вынужденный компромисс: Helm 3 хранит историю релизов
+# как свои собственные Secret'ы (driver "secrets") В ТОМ ЖЕ namespace, куда
+# деплоит чарт — значит, чтобы `helm upgrade --install` вообще мог
+# работать, ServiceAccount обязан уметь читать/писать Secret'ы в
+# miklat-app, включая (неизбежно) сам miklat-secrets. Это ограничение
+# самого Helm, а не наша недоработка — задокументировано как компромисс
+# (README, раздел Security, Фаза 4 шаг 7).
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins-cd
+  namespace: jenkins
+  labels:
+    part-of: miklat-cicd
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: miklat-cd-deployer
+  namespace: miklat-app
+  labels:
+    part-of: miklat-cicd
+rules:
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "serviceaccounts", "secrets", "events"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-cd-deployer
+  namespace: miklat-app
+  labels:
+    part-of: miklat-cicd
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-cd
+    namespace: jenkins
+roleRef:
+  kind: Role
+  name: miklat-cd-deployer
+  apiGroup: rbac.authorization.k8s.io

@@ -303,16 +303,20 @@ agent:
   containerCap: 5        # не больше 5 одновременных agent-подов (защита от перегрузки узла)
 
   # -- Кастомные pod template'ы для Kubernetes Cloud (Фаза 4, шаг 2) --
-  # ServiceAccount у обоих template'ов пока не задан (значит, используется
-  # дефолтный `jenkins` SA из namespace `jenkins`, настроенный на шаге 1
-  # с минимальным правом только управлять подами в СВОЁМ namespace) —
-  # выделенные ServiceAccount с явным разведением прав (`miklat-ci` без
-  # доступа к деплою вообще, `miklat-cd` — только в namespace `miklat-app`)
-  # запланированы отдельным шагом 7 (Security), делать это раньше времени
-  # значило бы забегать вперёд плана и рисковать сослаться на несуществующий
-  # SA (под тогда не создастся вообще). Сейчас оба agent'а физически не
-  # могут ничего задеплоить за пределы namespace `jenkins`, даже если
-  # захотят — это ожидаемо и безопасно на этом шаге.
+  # Фаза 4, шаг 5.2: ci-agent по-прежнему БЕЗ явного ServiceAccount — значит,
+  # используется дефолтный `jenkins` SA из namespace `jenkins` (права только
+  # на управление подами в СВОЁМ namespace, никакого доступа к miklat-app).
+  # cd-agent теперь явно использует ServiceAccount `jenkins-cd`
+  # (jenkins/cd-rbac.yaml) — у него, и только у него, есть права (через
+  # кросс-namespace RoleBinding) управлять ресурсами в namespace `miklat-app`
+  # (то самое разделение CI/CD прав из п.7 плана, реализованное раньше
+  # официального "шага 7", т.к. без него Jenkinsfile-cd физически не сможет
+  # аутентифицироваться для деплоя — это функциональная, а не косметическая
+  # часть шага 5).
+  #
+  # Поле `serviceAccount` — подтверждено по исходнику kubernetes-plugin
+  # (PodTemplate.java, @DataBoundSetter setServiceAccount(String)), маппится
+  # на spec.serviceAccountName пода, не угадано.
   podTemplates:
     ciAgent: |
       - name: ci-agent
@@ -358,6 +362,7 @@ agent:
     cdAgent: |
       - name: cd-agent
         label: cd-agent
+        serviceAccount: jenkins-cd
         containers:
           - name: kubectl-helm
             image: dtzar/helm-kubectl:4.2.3
