@@ -198,6 +198,22 @@ controller:
               pipelineJob('miklat-cd') {
                 description('CD: деплой готового образа (по tag/digest) в namespace miklat-app. Управляется как код (Job DSL) — не редактировать через UI.')
                 parameters {
+                  // choiceParam, а не stringParam: один тег коммита (SHA) —
+                  // это образы СРАЗУ нескольких сервисов (каждый в своём
+                  // repo в GHCR), поэтому Jenkinsfile-cd не может понять,
+                  // какой именно Deployment/values.yaml-ключ обновлять, без
+                  // явного указания сервиса. Список — ровно те строки,
+                  // которые CHANGED_SERVICES считает в Jenkinsfile-ci
+                  // (helm/miklat-app/values.yaml исключает osrm — сторонний
+                  // образ, не собирается и не деплоится этим CI/CD).
+                  // Синтаксис choiceParam(name, [choices], description)
+                  // проверен по первоисточнику: jenkinsci/job-dsl-plugin,
+                  // job-dsl-core/.../BuildParametersContext/choiceParam.groovy.
+                  choiceParam(
+                    'SERVICE_NAME',
+                    ['miklat-service', 'miklat-comments', 'miklat-routes', 'miklat-walking-routes', 'miklat-photos', 'miklat-gateway', 'frontend'],
+                    'Какой сервис деплоить (значение из CHANGED_SERVICES в Jenkinsfile-ci)'
+                  )
                   stringParam('IMAGE_TAG', '', 'Тег образа (commit-SHA), собранный джобом miklat-ci')
                   stringParam('IMAGE_DIGEST', '', 'Digest образа для доп. traceability (необязательно)')
                 }

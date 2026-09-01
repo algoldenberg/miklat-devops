@@ -1,0 +1,180 @@
+// Jenkinsfile-cd
+// Фаза 4, шаг 5: CD-пайплайн miklat-cd.
+//
+// Принимает 3 параметра job'а (Job DSL, jenkins/values.yaml):
+//   SERVICE_NAME  — какой сервис деплоим (то же имя, что CHANGED_SERVICES
+//                   считает в Jenkinsfile-ci: miklat-service, miklat-comments,
+//                   miklat-routes, miklat-walking-routes, miklat-photos,
+//                   miklat-gateway, frontend).
+//   IMAGE_TAG     — тег образа (commit-SHA), уже собранного и запушенного в
+//                   GHCR стадией Build & push (kaniko) в Jenkinsfile-ci.
+//   IMAGE_DIGEST  — необязательно, только для traceability в логах (digest
+//                   не участвует в самом деплое — деплоим по тегу, digest
+//                   публикует kaniko в build-metadata.txt в CI).
+//
+// Автоматическая связка miklat-ci -> miklat-cd (downstream job с параметрами)
+// — отдельный шаг 6, здесь job запускается вручную (Build with Parameters).
+//
+// Осознанно нет отдельной стадии Checkout: implicit "Declarative: Checkout
+// SCM" перед этим Jenkinsfile уже кладёт весь репозиторий (включая
+// helm/miklat-app/) в общий workspace-volume, который Kubernetes-плагин
+// монтирует во ВСЕ контейнеры пода одинаково (то же самое подтверждено в
+// логе Jenkinsfile-ci — общий workspace виден git/kaniko/python-tools/
+// node-tools без явного копирования) — доп. `checkout scm` внутри
+// container('kubectl-helm') не нужен и не рискует повторить баг
+// "dubious ownership" из Jenkinsfile-ci (тот баг возникал именно от
+// ПОВТОРНОГО checkout scm внутри именованного контейнера с другим UID).
+pipeline {
+    agent { label 'cd-agent' }
+
+    options {
+        timeout(time: 15, unit: 'MINUTES')
+    }
+
+    environment {
+        NAMESPACE = 'miklat-app'
+        RELEASE   = 'miklat-app'
+        CHART     = 'helm/miklat-app'
+    }
+
+    stages {
+        stage('Validate parameters') {
+            steps {
+                container('kubectl-helm') {
+                    script {
+                        if (!params.SERVICE_NAME?.trim()) {
+                            error("SERVICE_NAME обязателен — выбери сервис для деплоя.")
+                        }
+                        if (!params.IMAGE_TAG?.trim()) {
+                            error("IMAGE_TAG обязателен — тег образа (commit-SHA), собранный miklat-ci.")
+                        }
+                        // Ключи values.yaml Helm-чарта (helm/miklat-app) — по
+                        // одному на каждый реально деплоящийся сервис. osrm
+                        // сюда не входит — сторонний образ, не собирается и не
+                        // деплоится через этот CI/CD (см. helm/miklat-app/values.yaml).
+                        def chartKeys = [
+                            'miklat-service'       : 'miklatService',
+                            'miklat-comments'      : 'miklatComments',
+                            'miklat-routes'        : 'miklatRoutes',
+                            'miklat-walking-routes': 'miklatWalkingRoutes',
+                            'miklat-photos'        : 'miklatPhotos',
+                            'miklat-gateway'       : 'miklatGateway',
+                            'frontend'             : 'frontend',
+                        ]
+                        if (!chartKeys.containsKey(params.SERVICE_NAME)) {
+                            error("Неизвестный SERVICE_NAME: '${params.SERVICE_NAME}'. Допустимые значения: ${chartKeys.keySet()}")
+                        }
+                        env.CHART_VALUE_KEY = chartKeys[params.SERVICE_NAME]
+                        echo "Деплой: сервис=${params.SERVICE_NAME} (values-ключ ${env.CHART_VALUE_KEY}), тег=${params.IMAGE_TAG}, digest=${params.IMAGE_DIGEST ?: '(не передан)'}"
+                    }
+                }
+            }
+        }
+
+        stage('Validate manifests') {
+            steps {
+                container('kubectl-helm') {
+                    sh """
+                        helm lint ${CHART} --set ${env.CHART_VALUE_KEY}.imageTag=${params.IMAGE_TAG}
+                        helm upgrade --install ${RELEASE} ${CHART} \\
+                          --namespace ${NAMESPACE} \\
+                          --reuse-values \\
+                          --set ${env.CHART_VALUE_KEY}.imageTag=${params.IMAGE_TAG} \\
+                          --dry-run
+                    """
+                }
+            }
+        }
+
+        stage('Authenticate') {
+            steps {
+                container('kubectl-helm') {
+                    // Отдельной команды "логина" нет — под работает под
+                    // ServiceAccount'ом jenkins-cd (jenkins/values.yaml,
+                    // agent.podTemplates.cdAgent.serviceAccount), токен
+                    // которого kubectl/helm подхватывают автоматически через
+                    // in-cluster config. Явная проверка здесь — чтобы упасть
+                    // быстро и понятно при проблеме с правами, а не посреди
+                    // helm upgrade.
+                    sh """
+                        kubectl auth can-i update deployments -n ${NAMESPACE}
+                        kubectl get ns ${NAMESPACE}
+                    """
+                }
+            }
+        }
+
+        stage('Deploy (helm upgrade --install)') {
+            steps {
+                container('kubectl-helm') {
+                    sh """
+                        helm upgrade --install ${RELEASE} ${CHART} \\
+                          --namespace ${NAMESPACE} \\
+                          --reuse-values \\
+                          --set ${env.CHART_VALUE_KEY}.imageTag=${params.IMAGE_TAG} \\
+                          --wait --timeout 5m
+                    """
+                }
+            }
+        }
+
+        stage('Rollout status') {
+            steps {
+                container('kubectl-helm') {
+                    sh "kubectl rollout status deployment/${params.SERVICE_NAME} -n ${NAMESPACE} --timeout=120s"
+                }
+            }
+        }
+
+        stage('Verify Pods/Services') {
+            steps {
+                container('kubectl-helm') {
+                    sh """
+                        kubectl get pods -n ${NAMESPACE} -l app=${params.SERVICE_NAME}
+                        echo -n 'Реально запущенный образ: '
+                        kubectl get pods -n ${NAMESPACE} -l app=${params.SERVICE_NAME} \\
+                          -o jsonpath='{.items[0].status.containerStatuses[0].image}'
+                        echo
+                        kubectl get endpoints ${params.SERVICE_NAME} -n ${NAMESPACE}
+                    """
+                }
+            }
+        }
+
+        stage('Smoke test') {
+            steps {
+                container('kubectl-helm') {
+                    script {
+                        // FQDN с namespace обязателен: cd-agent физически в
+                        // namespace jenkins, короткое имя "<service>" resolve
+                        // только внутри своего собственного namespace.
+                        def port = (params.SERVICE_NAME == 'frontend') ? 8080 : 8000
+                        def path = (params.SERVICE_NAME == 'frontend') ? '/' : '/health'
+                        def url = "http://${params.SERVICE_NAME}.${env.NAMESPACE}.svc.cluster.local:${port}${path}"
+                        def code = sh(
+                            script: "curl -s -o /dev/null -w '%{http_code}' ${url}",
+                            returnStdout: true
+                        ).trim()
+                        echo "Smoke-test: ${url} -> HTTP ${code}"
+                        if (!(code ==~ /2\d\d/)) {
+                            error("Smoke-test провалился: ${params.SERVICE_NAME} ответил ${code} (ожидался 2xx) на ${url}")
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            container('kubectl-helm') {
+                echo "Деплой ${params.SERVICE_NAME}:${params.IMAGE_TAG} провалился — откатываю релиз ${RELEASE} на предыдущую ревизию (helm rollback ... 0)."
+                sh "helm rollback ${RELEASE} 0 --namespace ${NAMESPACE} --wait --timeout 5m || true"
+                sh "kubectl rollout status deployment/${params.SERVICE_NAME} -n ${NAMESPACE} --timeout=120s || true"
+            }
+        }
+        always {
+            echo "CD: сервис=${params.SERVICE_NAME ?: '?'} тег=${params.IMAGE_TAG ?: '?'} завершён со статусом ${currentBuild.currentResult}"
+        }
+    }
+}
