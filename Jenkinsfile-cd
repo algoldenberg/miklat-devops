@@ -136,13 +136,25 @@ pipeline {
         stage('Verify Pods/Services') {
             steps {
                 container('kubectl-helm') {
+                    // НЕ используем `kubectl get endpoints` (было в первой
+                    // версии и сломало второй прогон, 01.09.2026): Endpoints
+                    // — отдельный, автоматически генерируемый Kubernetes
+                    // ресурс (агрегация IP готовых Pod'ов за Service), не
+                    // управляется этим Helm-чартом, и Role miklat-cd-deployer
+                    // намеренно не даёт на него прав — та же логика, что и
+                    // с namespaces в стадии Authenticate. Вместо этого:
+                    // `kubectl get svc` (ресурс services — на него право уже
+                    // есть) подтверждает, что сам объект Service на месте, а
+                    // готовность реальных Pod'ов за ним (то, что показали бы
+                    // Endpoints) и так проверяется явно следующей стадией —
+                    // Smoke test делает настоящий HTTP-запрос через Service.
                     sh """
                         kubectl get pods -n ${NAMESPACE} -l app=${params.SERVICE_NAME}
                         echo -n 'Реально запущенный образ: '
                         kubectl get pods -n ${NAMESPACE} -l app=${params.SERVICE_NAME} \\
                           -o jsonpath='{.items[0].status.containerStatuses[0].image}'
                         echo
-                        kubectl get endpoints ${params.SERVICE_NAME} -n ${NAMESPACE}
+                        kubectl get svc ${params.SERVICE_NAME} -n ${NAMESPACE}
                     """
                 }
             }
