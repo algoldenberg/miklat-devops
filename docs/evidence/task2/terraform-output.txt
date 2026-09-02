@@ -1,0 +1,21 @@
+$ terraform output
+aws_region = "il-central-1"
+backend_private_ip = "10.20.1.236"
+backend_public_ip = "51.84.57.106"
+db_endpoint = "miklat-db.c986msyg4duz.il-central-1.rds.amazonaws.com:5432"
+db_name = "miklat"
+frontend_public_ip = "51.84.166.116"
+s3_photos_bucket = "miklat-photos-tf-232779827681"
+sns_topic_arn = "arn:aws:sns:il-central-1:232779827681:miklat-notifications-tf"
+worker_private_ip = "10.20.1.153"
+worker_public_ip = "51.17.5.45"
+
+Note: the initial `terraform plan` run during evidence collection (02.09.2026) showed
+"Plan: 3 to add, 0 to change, 3 to destroy" because the AMI was resolved dynamically via
+an SSM "latest" parameter (data.aws_ssm_parameter.al2023_ami), which AWS updates over time
+independently of any change to this project's configuration. Fixed by pinning the AMI to
+a concrete ID (var.ami_id = "ami-0487e9d84db7c95ff", the AMI actually running on all three
+instances, confirmed via `aws ec2 describe-instances`) in ec2.tf/variables.tf. After the
+fix, `terraform apply` performed an in-place, no-downtime update (only the `sensitive`
+metadata flag on the `ami` attribute changed, not its value or the running instance), and
+the subsequent `terraform plan` is clean ("No changes") — see terraform-plan.txt.

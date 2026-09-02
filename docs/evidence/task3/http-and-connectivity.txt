@@ -1,0 +1,37 @@
+$ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:30080/
+200
+
+$ curl -s "http://localhost:30080/api/miklats?limit=3"
+[
+  {"id":1,"name":"Shelter 819","address":"בועז 24","city":"Tel Aviv","capacity":50,"accessible":true,"lon":34.795009,"lat":32.049499,"type":"public_shelter","description":null,"is_verified":true,"created_at":"2026-08-29T14:43:59.425771Z","updated_at":"2026-08-29T14:43:59.425771Z"},
+  {"id":2,"name":"ארלוזורוב 115","address":"תש\"ח 2","city":null,"capacity":50,"accessible":true,"lon":34.787543875369,"lat":32.0845338723549,"type":"public_shelter","description":null,"is_verified":true,"created_at":"2026-08-29T14:43:59.425771Z","updated_at":"2026-08-29T14:43:59.425771Z"},
+  {"id":3,"name":"סיוון 0","address":"תשרי 52","city":null,"capacity":50,"accessible":true,"lon":34.7898985730608,"lat":32.0449647525893,"type":"public_shelter","description":null,"is_verified":true,"created_at":"2026-08-29T14:43:59.425771Z","updated_at":"2026-08-29T14:43:59.425771Z"}
+]
+
+Confirms external HTTP access via the k3s Ingress (public IP 83.229.70.64:30080), routed
+through the frontend Deployment's nginx to miklat-gateway (Service ClusterIP), which
+forwards to miklat-service, which queries the real RDS PostgreSQL+PostGIS instance.
+
+$ curl -s "http://localhost:30080/api/ready" | python3 -m json.tool
+{
+    "status": "ok",
+    "services": {
+        "miklat-service": "up",
+        "miklat-comments": "up",
+        "miklat-routes": "up",
+        "miklat-walking-routes": "up",
+        "miklat-photos": "up"
+    }
+}
+
+Confirms frontend -> gateway -> all 5 backend/worker Services connectivity: miklat-gateway
+aggregates a live /health check against each of the 5 Services by their ClusterIP/DNS name,
+all reachable and healthy.
+
+$ GW_IP=$(sudo k3s kubectl get svc miklat-photos -n miklat-app -o jsonpath='{.spec.clusterIP}')
+$ curl -s "http://$GW_IP:8000/ready"
+{"status":"ok","database":"up","s3":"up"}
+
+Confirms miklat-photos' own /ready check: real RDS connectivity ("database":"up") and real
+AWS S3 connectivity ("s3":"up", via a live HeadBucket call against miklat-photos-tf-*, using
+the IAM credentials from the miklat-secrets Kubernetes Secret).

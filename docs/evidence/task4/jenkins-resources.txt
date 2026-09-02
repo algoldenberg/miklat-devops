@@ -1,0 +1,81 @@
+$ sudo k3s kubectl get pods,svc,ingress -n jenkins
+NAME            READY   STATUS    RESTARTS   AGE
+pod/jenkins-0   2/2     Running   0          46h
+
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)     AGE
+service/jenkins         ClusterIP   10.43.195.92   <none>        8080/TCP    2d1h
+service/jenkins-agent   ClusterIP   10.43.48.213   <none>        50000/TCP   2d1h
+
+NAME                                                CLASS   HOSTS   ADDRESS        PORTS   AGE
+ingress.networking.k8s.io/jenkins-webhook-ingress   nginx   *       83.229.70.64   80      46h
+
+$ sudo k3s kubectl get pvc,serviceaccount,role,rolebinding -n jenkins
+NAME                            STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/jenkins   Bound    pvc-ff522c56-85ea-4fdc-ab5a-52c6d47cc22a   8Gi        RWO            local-path     <unset>                 2d1h
+
+NAME                        AGE
+serviceaccount/default      2d1h
+serviceaccount/jenkins      2d1h
+serviceaccount/jenkins-cd   27h
+
+NAME                                                     CREATED AT
+role.rbac.authorization.k8s.io/jenkins-casc-reload       2026-08-31T16:13:34Z
+role.rbac.authorization.k8s.io/jenkins-schedule-agents   2026-08-31T16:13:34Z
+
+NAME                                                             ROLE                           AGE
+rolebinding.rbac.authorization.k8s.io/jenkins-schedule-agents    Role/jenkins-schedule-agents   2d1h
+rolebinding.rbac.authorization.k8s.io/jenkins-watch-configmaps   Role/jenkins-casc-reload       2d1h
+
+$ sudo helm list -n jenkins
+NAME    NAMESPACE       REVISION        UPDATED                                 STATUS          CHART           APP VERSION
+jenkins jenkins         12              2026-09-01 14:09:31.357793867 +0000 UTC deployed        jenkins-5.9.29  2.555.3
+
+$ sudo k3s kubectl get events -n jenkins --sort-by='.lastTimestamp' | tail -20
+4m11s       Normal    Created            pod/ci-agent-7h18q   Container created
+4m11s       Normal    Started            pod/ci-agent-7h18q   Container started
+4m11s       Normal    Started            pod/ci-agent-7h18q   Container started
+4m11s       Normal    Started            pod/ci-agent-7h18q   Container started
+4m11s       Normal    Pulled             pod/ci-agent-7h18q   Container image "node:22-slim" already present on machine and can be accessed by the pod
+4m11s       Normal    Created            pod/ci-agent-7h18q   Container created
+4m11s       Normal    Started            pod/ci-agent-7h18q   Container started
+4m11s       Normal    Pulled             pod/ci-agent-7h18q   Container image "python:3.12-slim" already present on machine and can be accessed by the pod
+4m11s       Normal    Created            pod/ci-agent-7h18q   Container created
+4m11s       Normal    Pulled             pod/ci-agent-7h18q   Container image "gcr.io/kaniko-project/executor:v1.23.2-debug" already present on machine and can be accessed by the pod
+4m11s       Normal    Pulled             pod/ci-agent-7h18q   Container image "jenkins/inbound-agent:3355.v388858a_47b_33-3-jdk21" already present on machine and can be accessed by the pod
+4m11s       Normal    Created            pod/ci-agent-7h18q   Container created
+4m11s       Normal    Created            pod/ci-agent-7h18q   Container created
+4m11s       Normal    Pulled             pod/ci-agent-7h18q   Container image "alpine/git:2.54.0" already present on machine and can be accessed by the pod
+4m11s       Normal    Started            pod/ci-agent-7h18q   Container started
+81s         Normal    Killing            pod/ci-agent-7h18q   Stopping container git
+81s         Normal    Killing            pod/ci-agent-7h18q   Stopping container kaniko
+81s         Normal    Killing            pod/ci-agent-7h18q   Stopping container node-tools
+81s         Normal    Killing            pod/ci-agent-7h18q   Stopping container python-tools
+81s         Normal    Killing            pod/ci-agent-7h18q   Stopping container jnlp
+
+Events confirm the full, healthy lifecycle of the CI agent pod for the
+successful `miklat-ci` build #16 (see evidence_task4_successful-pipeline-run.txt):
+all 5 containers (jnlp, git, python-tools, node-tools, kaniko) created and
+started cleanly, then torn down (`Killing`) once the pipeline finished —
+`podRetention: Never` in the agent PodTemplate (Phase 4 Step 2), as designed.
+No `FailedScheduling`/`BackOff` events at all in this run, unlike the
+NetworkPolicy incident captured separately.
+
+Confirms the full Jenkins control-plane footprint in the `jenkins` namespace:
+- Service `jenkins` (port 8080): web UI + GitHub webhook entry point, reached only
+  through the `jenkins-webhook-ingress` Ingress (public IP 83.229.70.64).
+- Service `jenkins-agent` (port 50000): dedicated JNLP tunnel port used by CI/CD
+  agent pods to register with the controller (see
+  evidence_task4_networkpolicy-incident.txt for how this connection was diagnosed
+  and fixed).
+- PVC `jenkins` (8Gi, Bound): persists Jenkins home (job configs, build history,
+  plugins) across controller pod restarts.
+- Two custom Roles + RoleBindings from Phase 4 Step 5 RBAC hardening:
+  `jenkins-schedule-agents` (lets the controller's ServiceAccount create/delete
+  ephemeral agent pods) and `jenkins-casc-reload` (lets it watch ConfigMaps for
+  live JCasC config reload). A separate `jenkins-cd` ServiceAccount (created
+  27h before this snapshot) is used only by cd-agent pods for their own
+  narrower RBAC scope (deploy permissions in miklat-app, verified via
+  `kubectl auth can-i` in Phase 4 Step 7).
+- Jenkins itself is installed via the official Helm chart (`jenkins-5.9.29`,
+  app version 2.555.3), managed entirely as code (JCasC + Helm values in Git,
+  no manual UI configuration) — currently at release revision 12.

@@ -1,0 +1,14 @@
+$ curl -s -o /dev/null -w "%{http_code}\n" http://51.84.166.116/
+200
+
+$ curl -s "http://51.84.166.116/api/miklats?limit=3"
+[
+  {"id":1,"name":"Shelter 819","address":"בועז 24","city":"Tel Aviv","capacity":50,"accessible":true,"lon":34.795009,"lat":32.049499,"type":"public_shelter","description":null,"is_verified":true,"created_at":"2026-08-29T14:43:59.425771Z","updated_at":"2026-08-29T14:43:59.425771Z"},
+  {"id":2,"name":"ארלוזורוב 115","address":"תש\"ח 2","city":null,"capacity":50,"accessible":true,"lon":34.787543875369,"lat":32.0845338723549,"type":"public_shelter","description":null,"is_verified":true,"created_at":"2026-08-29T14:43:59.425771Z","updated_at":"2026-08-29T14:43:59.425771Z"},
+  {"id":3,"name":"סיוון 0","address":"תשרי 52","city":null,"capacity":50,"accessible":true,"lon":34.7898985730608,"lat":32.0449647525893,"type":"public_shelter","description":null,"is_verified":true,"created_at":"2026-08-29T14:43:59.425771Z","updated_at":"2026-08-29T14:43:59.425771Z"}
+]
+
+Confirms: HTTP request reaches the frontend EC2 (nginx, public IP 51.84.166.116) which
+proxies /api/* to the backend EC2's miklat-gateway, which in turn routes to miklat-service,
+which queries the real RDS PostgreSQL+PostGIS instance — full request chain through the
+Terraform-provisioned + Ansible-configured infrastructure, end to end.

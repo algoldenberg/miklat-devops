@@ -1,0 +1,56 @@
+$ sudo k3s kubectl get deployments,pods,services,ingress -n miklat-app
+NAME                                    READY   UP-TO-DATE   AVAILABLE   AGE
+deployment.apps/frontend                1/1     1            1           3d6h
+deployment.apps/miklat-comments         1/1     1            1           3d6h
+deployment.apps/miklat-gateway          1/1     1            1           3d6h
+deployment.apps/miklat-photos           1/1     1            1           3d6h
+deployment.apps/miklat-routes           1/1     1            1           3d6h
+deployment.apps/miklat-service          1/1     1            1           3d6h
+deployment.apps/miklat-walking-routes   1/1     1            1           3d6h
+deployment.apps/osrm                    1/1     1            1           3d6h
+
+NAME                                         READY   STATUS    RESTARTS     AGE
+pod/frontend-b54b8cc8-rklqn                  1/1     Running   2 (2d ago)   2d1h
+pod/miklat-comments-575f66f54d-nvm2g         1/1     Running   1 (2d ago)   2d1h
+pod/miklat-gateway-6d8fd9956d-cvzrc          1/1     Running   1 (2d ago)   2d1h
+pod/miklat-photos-86785d7d9f-jdf54           1/1     Running   0            133m
+pod/miklat-routes-5c797b7679-xzjf4           1/1     Running   1 (2d ago)   2d1h
+pod/miklat-service-759bc48f9b-zvcc4          1/1     Running   0            47m
+pod/miklat-walking-routes-56dcb46dd9-dgzn4   1/1     Running   1 (2d ago)   2d1h
+pod/osrm-6f67f9cc9-hj9d4                     1/1     Running   1 (2d ago)   2d1h
+
+NAME                            TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+service/frontend                ClusterIP   10.43.213.58    <none>        8080/TCP   3d6h
+service/miklat-comments         ClusterIP   10.43.89.158    <none>        8000/TCP   3d6h
+service/miklat-gateway          ClusterIP   10.43.68.255    <none>        8000/TCP   3d6h
+service/miklat-photos           ClusterIP   10.43.2.179     <none>        8000/TCP   3d6h
+service/miklat-routes           ClusterIP   10.43.220.44    <none>        8000/TCP   3d6h
+service/miklat-service          ClusterIP   10.43.175.104   <none>        8000/TCP   3d6h
+service/miklat-walking-routes   ClusterIP   10.43.222.203   <none>        8000/TCP   3d6h
+service/osrm                    ClusterIP   10.43.61.129    <none>        5000/TCP   3d6h
+
+NAME                                       CLASS   HOSTS   ADDRESS        PORTS   AGE
+ingress.networking.k8s.io/miklat-ingress   nginx   *       83.229.70.64   80      2d2h
+
+$ sudo k3s kubectl rollout status deployment/miklat-service -n miklat-app
+deployment "miklat-service" successfully rolled out
+
+$ sudo k3s kubectl get deployment miklat-service -n miklat-app -o jsonpath='{.spec.template.spec.containers[0].image}'
+ghcr.io/algoldenberg/miklat-service:7fb370d
+
+Confirms the application deployed and continuously managed by this same
+CI/CD pipeline (miklat-ci -> GHCR -> miklat-cd, see architecture-task4.md)
+stayed fully healthy (all 8 workloads 1/1 Running) throughout the entire
+NetworkPolicy incident and fix documented in
+evidence_task4_networkpolicy-incident.txt — the incident affected only the
+Jenkins control plane (agent scheduling) in the `jenkins` namespace, never
+the running application in `miklat-app`, which is a separate namespace with
+its own NetworkPolicy rules (see evidence_task3_*.txt).
+
+`miklat-service` pod age (47m) and RESTARTS (0) reflect the deliberate
+self-healing test performed for Task 3 evidence (delete pod ->
+Kubernetes recreated it automatically), not an unexpected crash. The
+currently deployed image tag (`7fb370d`) matches the last successful
+`miklat-cd` run (#5, per the Jenkins dashboard), confirming the CI/CD
+pipeline's deploy step is in a consistent, correct state independent of the
+CI-side NetworkPolicy issue that has since been fixed.

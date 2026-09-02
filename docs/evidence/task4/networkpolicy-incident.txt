@@ -1,0 +1,117 @@
+REAL INCIDENT FOUND AND FIXED DURING EVIDENCE COLLECTION (02.09.2026)
+======================================================================
+This file documents a genuine bug discovered while gathering Task 4 evidence:
+a NetworkPolicy added in Phase 4 Step 7 was silently blocking every CI/CD
+agent from connecting to the Jenkins controller. Kept here in full because it
+is real, reproducible engineering work — found, diagnosed without guessing,
+and fixed with a verified root cause — not just a clean happy-path run.
+
+--- Symptom ---
+
+While collecting the Task 4 "healthy state" evidence, `ci-agent-*` pods for
+`miklat-ci` were observed cycling indefinitely: created, reaching `5/5
+Running` at the Kubernetes level within seconds, but never actually
+registering as an available Jenkins executor. Each cycle ended after ~1000
+seconds with the pod being torn down and a brand-new one created under a
+different random name. This repeated across at least 6 different agent pods
+(`ci-agent-r39r3`, `-tdzbn`, `-cnvcv`, `-dvr39`, `-b6dtz`, `-33g8f`) over
+roughly one hour.
+
+--- First (partial) explanation: two concurrent builds ---
+
+$ sudo k3s kubectl describe pod ci-agent-b6dtz -n jenkins | tail -10
+Events:
+  Type     Reason            Age   From               Message
+  ----     ------            ----  ----               -------
+  Warning  FailedScheduling  14m   default-scheduler   0/1 nodes are available: 1 Insufficient memory...
+
+Two `miklat-ci` builds (#14, #15) had been triggered by two separate,
+legitimate commits pushed close together (Phase 4 Step 7 work). Their two
+agent pods (5 containers each) could not both fit in available node memory —
+a real but secondary finding. Aborting the redundant build (#15) freed the
+memory, but the surviving build's agent pod (ci-agent-dvr39, then
+ci-agent-33g8f) STILL failed to connect, on every subsequent attempt. This
+ruled out memory pressure as the actual root cause.
+
+--- Actual root cause, found in the Jenkins controller's own log ---
+
+$ sudo k3s kubectl logs jenkins-0 -n jenkins -c jenkins --tail=300 | grep -i -B3 -A8 "ci-agent"
+...
+[LF]> INFO: Locating server among [http://jenkins.jenkins.svc.cluster.local:8080/]
+[LF]> INFO: Could not locate server among [http://jenkins.jenkins.svc.cluster.local:8080/]; waiting 10 seconds before retry
+[LF]> java.io.IOException: Failed to connect to http://jenkins.jenkins.svc.cluster.local:8080/tcpSlaveAgentListener/: Connection refused
+...
+java.lang.IllegalStateException: Agent is not connected after 1000 seconds, status: Running
+
+This exact error repeated identically for every single agent pod attempt —
+a 100% reproducible network-level failure, not a transient blip.
+
+The JNLP inbound-agent client, when launched with a plain `http://` Jenkins
+URL (no `-webSocket`/`-tunnel` override), always performs an HTTP discovery
+request to `<url>/tcpSlaveAgentListener/` on the WEB port (8080) first, to
+learn which TCP port to use for the actual JNLP4 tunnel (50000 in this
+setup). Only after that discovery step succeeds does it open the tunnel
+connection.
+
+The `jenkins/network-policy.yaml` file added in Phase 4 Step 7 explicitly
+allowed agent-labeled pods to reach the controller only on port 50000 (the
+tunnel), not on port 8080 (the discovery step) — so every agent failed at
+the very first step, before ever reaching the tunnel port. The file's own
+header comment stated this NetworkPolicy was believed to have NO real
+effect, because "flannel does not enforce NetworkPolicy" — true for bare
+flannel, but incomplete for k3s specifically.
+
+--- Confirming k3s enforces NetworkPolicy by default (not a guess) ---
+
+$ ps aux | grep '[k]3s server'
+root         831  6.3  9.1 1967968 558444 ?      Ssl  Aug31 184:58 /usr/local/bin/k3s server
+
+No `--disable-network-policy` flag present. k3s bundles its own built-in
+Network Policy controller on top of flannel, enabled by default unless that
+flag is explicitly set — so the policy WAS being actively enforced, and the
+missing port-8080 rule was a real, functional bug, not inert documentation.
+
+--- Fix ---
+
+Added TCP port 8080 alongside the existing port 50000 in two rules of
+`jenkins/network-policy.yaml`:
+  - `allow-controller-ingress`: agent-labeled pods (jenkins/jenkins-jenkins-agent=true)
+    may now reach the controller on 8080 (discovery) AND 50000 (tunnel).
+  - `allow-agent-egress-common`: agent pods may now egress to the controller
+    on 8080 AND 50000.
+
+Committed and pushed (commit before "Pin EC2 AMI..."), then applied directly
+on the live cluster to test before waiting for a full CI cycle:
+
+$ sudo k3s kubectl apply -f jenkins/network-policy.yaml
+networkpolicy.networking.k8s.io/default-deny-all unchanged
+networkpolicy.networking.k8s.io/allow-dns-egress unchanged
+networkpolicy.networking.k8s.io/allow-controller-ingress configured
+networkpolicy.networking.k8s.io/allow-controller-egress unchanged
+networkpolicy.networking.k8s.io/allow-agent-egress-common configured
+networkpolicy.networking.k8s.io/allow-cd-agent-egress unchanged
+
+NetworkPolicy takes effect immediately at the packet-filter level — no pod
+restart needed.
+
+--- Verified fix ---
+
+$ sudo k3s kubectl logs jenkins-0 -n jenkins -c jenkins --tail=30 | grep -i "7h18q"
+INFO  hudson.slaves.NodeProvisioner#update: ci-agent-7h18q provisioning successfully completed. We have now 2 computer(s)
+INFO  o.c.j.p.k.KubernetesLauncher#launch: Created Pod: kubernetes jenkins/ci-agent-7h18q
+INFO  o.c.j.p.k.KubernetesLauncher#launch: Pod is running: kubernetes jenkins/ci-agent-7h18q
+
+No "Waiting for agent to connect" retries at all this time — the agent
+connected on the first attempt (previously it always failed after up to
+1000 seconds of retries). The very next `miklat-ci` build (#16) ran the
+agent to completion: Checkout, Validate, Lint, Tests all executed for real
+and the pipeline finished `Finished: SUCCESS` (see
+evidence_task4_successful-pipeline-run.txt for the full console output).
+
+--- Lesson documented in jenkins/network-policy.yaml itself ---
+
+The file's header comment was updated in the same fix to correct the
+original incorrect assumption ("flannel doesn't enforce NetworkPolicy") with
+the verified fact that k3s enforces it by default via its own bundled
+controller, and to record this incident as the reason ports 8080 and 50000
+are both now required in the agent-controller rules.

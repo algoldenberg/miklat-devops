@@ -1,0 +1,48 @@
+--- SNS connectivity (miklat-service's own /ready) ---
+
+$ SVC_IP=$(sudo k3s kubectl get svc miklat-service -n miklat-app -o jsonpath='{.spec.clusterIP}')
+$ curl -s "http://$SVC_IP:8000/ready"
+{"status":"ok","database":"up","sns":"up"}
+
+Confirms real AWS SNS connectivity ("sns":"up", via a live GetTopicAttributes call against
+arn:aws:sns:il-central-1:232779827681:miklat-notifications-tf, using the IAM credentials
+from the miklat-secrets Kubernetes Secret). Combined with the S3 check on miklat-photos
+(see http-and-connectivity.txt), this confirms both required AWS integrations work from
+inside the cluster.
+
+--- Pod restart / self-healing, no manual intervention ---
+
+$ sudo k3s kubectl get pods -n miklat-app -l app=miklat-service
+NAME                              READY   STATUS    RESTARTS     AGE
+miklat-service-759bc48f9b-kksch   1/1     Running   1 (2d ago)   2d1h
+
+$ sudo k3s kubectl delete pod -n miklat-app -l app=miklat-service
+pod "miklat-service-759bc48f9b-kksch" deleted from miklat-app namespace
+
+$ sleep 5
+$ sudo k3s kubectl get pods -n miklat-app -l app=miklat-service
+NAME                              READY   STATUS    RESTARTS   AGE
+miklat-service-759bc48f9b-zvcc4   0/1     Running   0          6s
+
+$ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:30080/api/miklats?limit=1
+503
+
+# New pod not yet ready (readinessProbe: initialDelaySeconds=5s, periodSeconds=10s — first
+# check happens ~15s after container start), so the request briefly returned 503. Waited
+# and re-checked:
+
+$ sleep 15
+$ sudo k3s kubectl get pods -n miklat-app -l app=miklat-service
+NAME                              READY   STATUS    RESTARTS   AGE
+miklat-service-759bc48f9b-zvcc4   1/1     Running   0          63s
+
+$ curl -s -o /dev/null -w "%{http_code}\n" http://localhost:30080/api/miklats?limit=1
+200
+
+Confirms Kubernetes self-healing: the Deployment controller automatically recreated the
+Pod after manual deletion, with no operator intervention beyond the initial `kubectl
+delete pod`. Honest note: since miklat-service runs a single replica (replicas: 1, no
+surge/rolling strategy configured), this is a brief self-healing recovery (~15-20s until
+the readiness probe passes), not a zero-downtime rolling update — that would require
+multiple replicas or a maxSurge rolling strategy, which is out of scope for this project's
+current resource budget (t3.micro-equivalent single-node k3s).

@@ -1,0 +1,99 @@
+$ sudo k3s kubectl describe pod -n miklat-app -l app=miklat-service
+Name:             miklat-service-759bc48f9b-kksch
+Namespace:        miklat-app
+Priority:         0
+Service Account:  miklat-backend-sa
+Node:             mbdai/83.229.70.64
+Start Time:       Mon, 31 Aug 2026 15:49:05 +0000
+Labels:           app=miklat-service
+                  part-of=miklat
+                  pod-template-hash=759bc48f9b
+                  tier=backend
+Annotations:      <none>
+Status:           Running
+IP:               10.42.0.44
+IPs:
+  IP:           10.42.0.44
+Controlled By:  ReplicaSet/miklat-service-759bc48f9b
+Containers:
+  miklat-service:
+    Container ID:   containerd://5b526e814d2493959017ec5a76ea60aa73bbebcfb912c1f26ba3a8fb497cd625
+    Image:          ghcr.io/algoldenberg/miklat-service:7fb370d
+    Image ID:       ghcr.io/algoldenberg/miklat-service@sha256:aab8fce202baa72e654b63196cf1578c72e6438d91712958edf01a7df09083a7
+    Port:           8000/TCP
+    Host Port:      0/TCP
+    State:          Running
+      Started:      Mon, 31 Aug 2026 16:48:42 +0000
+    Last State:     Terminated
+      Reason:       Unknown
+      Exit Code:    255
+      Started:      Mon, 31 Aug 2026 15:49:05 +0000
+      Finished:     Mon, 31 Aug 2026 16:48:32 +0000
+    Ready:          True
+    Restart Count:  1
+    Limits:
+      cpu:     250m
+      memory:  256Mi
+    Requests:
+      cpu:      50m
+      memory:   64Mi
+    Liveness:   http-get http://:8000/health delay=10s timeout=1s period=15s #success=1 #failure=3
+    Readiness:  http-get http://:8000/ready delay=5s timeout=1s period=10s #success=1 #failure=3
+    Environment:
+      DATABASE_URL:           <set to the key 'DATABASE_URL' in secret 'miklat-secrets'>           Optional: false
+      ADMIN_API_KEY:          <set to the key 'ADMIN_API_KEY' in secret 'miklat-secrets'>          Optional: false
+      AWS_ACCESS_KEY_ID:      <set to the key 'AWS_ACCESS_KEY_ID' in secret 'miklat-secrets'>      Optional: false
+      AWS_SECRET_ACCESS_KEY:  <set to the key 'AWS_SECRET_ACCESS_KEY' in secret 'miklat-secrets'>  Optional: false
+      SNS_TOPIC_ARN:          <set to the key 'SNS_TOPIC_ARN' in secret 'miklat-secrets'>          Optional: false
+      AWS_REGION:             <set to the key 'AWS_REGION' of config map 'miklat-config'>          Optional: false
+    Mounts:                   <none>
+Conditions:
+  Type                        Status
+  PodReadyToStartContainers   True
+  Initialized                 True
+  Ready                       True
+  ContainersReady             True
+  PodScheduled                True
+Volumes:                      <none>
+QoS Class:                    Burstable
+Node-Selectors:               <none>
+Tolerations:                  node.kubernetes.io/not-ready:NoExecute op=Exists for 300s
+                              node.kubernetes.io/unreachable:NoExecute op=Exists for 300s
+Events:                       <none>
+
+$ sudo k3s kubectl logs -n miklat-app -l app=miklat-service --tail=30
+INFO:     10.42.0.1:54302 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.39:57432 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:49628 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.39:49666 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:49632 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:47688 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.39:42504 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:40376 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.1:40378 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.39:56082 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:48588 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.39:52396 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:48604 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:41372 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.39:53296 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:38824 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.1:38834 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.39:34924 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:51352 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.39:54268 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:51360 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:44238 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.39:46466 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:51386 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.1:51396 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.39:34104 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:43340 - "GET /ready HTTP/1.1" 200 OK
+INFO:     10.42.0.39:55510 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:43352 - "GET /health HTTP/1.1" 200 OK
+INFO:     10.42.0.1:57994 - "GET /ready HTTP/1.1" 200 OK
+
+Note: the recorded "Last State: Terminated / Exit Code: 255 / Reason: Unknown" for this pod
+reflects the shared-server memory incident and host reboot documented in miklat-progress.md
+(Phase 3, "инцидент с памятью") — not a code defect. The pod has been continuously
+"Ready: True" since, with a stable Restart Count of 1.

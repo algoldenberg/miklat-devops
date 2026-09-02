@@ -1,0 +1,102 @@
+Full Console Output of miklat-ci build #16 (first successful build after the
+NetworkPolicy fix documented in evidence_task4_networkpolicy-incident.txt).
+Triggered automatically by GitHub push webhook on commit 288277a ("Pin EC2
+AMI to avoid drift-triggered replacement on terraform plan").
+
+Note: two lines of pipeline-echo output were originally in Russian (the
+Jenkinsfile's own `echo` statements); translated below to English, values
+unchanged: "Изменившиеся сервисы:" -> "Changed services:" and "Сборка
+commit=... завершена со статусом ..." -> "Build commit=... finished with
+status ...". Everything else in this log is verbatim real Jenkins/tool
+output.
+
+======================================================================
+
+Started by GitHub push by algoldenberg
+Checking out git https://github.com/algoldenberg/miklat-devops.git into /var/jenkins_home/jobs/miklat-ci/workspace@script/... to read Jenkinsfile-ci
+Checking out Revision 288277aee2f1e3c38e1696cf366c2e3d8be45971 (origin/main)
+Commit message: "Pin EC2 AMI to avoid drift-triggered replacement on terraform plan"
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Agent ci-agent-7h18q is provisioned from template ci-agent
+Running on ci-agent-7h18q in /home/jenkins/agent/workspace/miklat-ci
+[Pipeline] { (Declarative: Checkout SCM)
+Cloning repository https://github.com/algoldenberg/miklat-devops.git
+Checking out Revision 288277aee2f1e3c38e1696cf366c2e3d8be45971 (origin/main)
+[Pipeline] stage (Checkout)
++ git config --global --add safe.directory '*'
+Checking out Revision 288277aee2f1e3c38e1696cf366c2e3d8be45971 (origin/main)
+Commit message: "Pin EC2 AMI to avoid drift-triggered replacement on terraform plan"
++ git rev-parse --short HEAD
+[Pipeline] stage (Validate)
++ python3 ci/validate.py
+Validate OK — 6 backend services + frontend, structure and Dockerfiles are correct.
+[Pipeline] stage (Lint)
+[Pipeline] parallel
+  (Branch: Python)
+    + echo == ruff: services/miklat-comments/ ==
+    + ruff check --select E4,E7,E9,F services/miklat-comments/
+    All checks passed!
+    + echo == ruff: services/miklat-gateway/ ==
+    + ruff check --select E4,E7,E9,F services/miklat-gateway/
+    All checks passed!
+    + echo == ruff: services/miklat-photos/ ==
+    + ruff check --select E4,E7,E9,F services/miklat-photos/
+    All checks passed!
+    + echo == ruff: services/miklat-routes/ ==
+    + ruff check --select E4,E7,E9,F services/miklat-routes/
+    All checks passed!
+    + echo == ruff: services/miklat-service/ ==
+    + ruff check --select E4,E7,E9,F services/miklat-service/
+    All checks passed!
+    + echo == ruff: services/miklat-walking-routes/ ==
+    + ruff check --select E4,E7,E9,F services/miklat-walking-routes/
+    All checks passed!
+  (Branch: Frontend)
+    + npm ci
+    added 30 packages, and audited 31 packages in 6s
+    found 0 vulnerabilities
+    + npx oxlint src/
+    Found 4 warnings and 0 errors.
+    Finished in 54ms on 11 files with 104 rules using 1 threads.
+    (4 pre-existing React "set-state-in-effect" style warnings in App.jsx,
+    CommentsSection.jsx, PhotosSection.jsx — not related to this change,
+    0 errors)
+[Pipeline] stage (Tests)
+[Pipeline] parallel
+  (Branch: Python services)
+    == pytest (smoke): miklat-comments ==
+    pytest tests/test_health.py -q  ->  1 passed in 0.91s
+    == pytest (smoke): miklat-gateway ==
+    pytest tests/test_health.py -q  ->  1 passed in 0.62s
+    == pytest (smoke): miklat-photos ==
+    pytest tests/test_health.py -q  ->  1 passed in 1.09s
+    == pytest (smoke): miklat-routes ==
+    pytest tests/test_health.py -q  ->  1 passed in 0.90s
+    == pytest (smoke): miklat-service ==
+    pytest tests/test_health.py -q  ->  1 passed in 1.17s
+    == pytest (smoke): miklat-walking-routes ==
+    pytest tests/test_health.py -q  ->  1 passed in 0.91s
+  (Branch: Frontend build)
+    + npm run build
+    vite v8.2.2 building client environment for production...
+    ✓ 69 modules transformed.
+    dist/index.html                   0.48 kB
+    dist/assets/index-D-PU6yQ0.css   19.05 kB
+    dist/assets/index-CokZVzCT.js   368.41 kB
+    ✓ built in 813ms
+[Pipeline] stage (Detect changed services)
++ git diff --name-only 'HEAD~1' HEAD
+Changed services:
+(empty — this commit only touched terraform/ec2.tf and terraform/variables.tf,
+no service or frontend code, so no images needed rebuilding)
+[Pipeline] stage (Build & push (kaniko))
+Stage "Build & push (kaniko)" skipped due to when conditional
+[Pipeline] stage (Publish metadata)
+Stage "Publish metadata" skipped due to when conditional
+[Pipeline] stage (Trigger CD)
+Stage "Trigger CD" skipped due to when conditional
+[Pipeline] stage (Declarative: Post Actions)
+Build commit=288277a finished with status SUCCESS
+[Pipeline] End of Pipeline
+Finished: SUCCESS

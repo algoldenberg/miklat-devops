@@ -1,0 +1,50 @@
+$ sudo k3s kubectl get nodes
+NAME    STATUS   ROLES           AGE    VERSION
+mbdai   Ready    control-plane   3d8h   v1.36.4+k3s1
+
+$ sudo k3s kubectl get namespaces
+NAME              STATUS   AGE
+default           Active   3d8h
+ingress-nginx     Active   2d2h
+jenkins           Active   2d
+kube-node-lease   Active   3d8h
+kube-public       Active   3d8h
+kube-system       Active   3d8h
+miklat-app        Active   3d8h
+
+$ sudo k3s kubectl get pods -n miklat-app -o wide
+NAME                                     READY   STATUS    RESTARTS     AGE    IP           NODE    NOMINATED NODE   READINESS GATES
+frontend-b54b8cc8-rklqn                  1/1     Running   2 (2d ago)   2d1h   10.42.0.43   mbdai   <none>           <none>
+miklat-comments-575f66f54d-nvm2g         1/1     Running   1 (2d ago)   2d1h   10.42.0.38   mbdai   <none>           <none>
+miklat-gateway-6d8fd9956d-cvzrc          1/1     Running   1 (2d ago)   2d1h   10.42.0.39   mbdai   <none>           <none>
+miklat-photos-86785d7d9f-jdf54           1/1     Running   0            82m    10.42.0.78   mbdai   <none>           <none>
+miklat-routes-5c797b7679-xzjf4           1/1     Running   1 (2d ago)   2d1h   10.42.0.42   mbdai   <none>           <none>
+miklat-service-759bc48f9b-kksch          1/1     Running   1 (2d ago)   2d1h   10.42.0.44   mbdai   <none>           <none>
+miklat-walking-routes-56dcb46dd9-dgzn4   1/1     Running   1 (2d ago)   2d1h   10.42.0.48   mbdai   <none>           <none>
+osrm-6f67f9cc9-hj9d4                     1/1     Running   1 (2d ago)   2d1h   10.42.0.46   mbdai   <none>           <none>
+
+$ sudo k3s kubectl get deployments -n miklat-app
+NAME                    READY   UP-TO-DATE   AVAILABLE   AGE
+frontend                1/1     1            1           3d5h
+miklat-comments         1/1     1            1           3d5h
+miklat-gateway          1/1     1            1           3d5h
+miklat-photos           1/1     1            1           3d5h
+miklat-routes           1/1     1            1           3d5h
+miklat-service          1/1     1            1           3d5h
+miklat-walking-routes   1/1     1            1           3d5h
+osrm                    1/1     1            1           3d5h
+
+$ sudo k3s kubectl get services -n miklat-app
+NAME                    TYPE        CLUSTER-IP      EXTERNAL-IP   PORT(S)    AGE
+frontend                ClusterIP   10.43.213.58    <none>        8080/TCP   3d5h
+miklat-comments         ClusterIP   10.43.89.158    <none>        8000/TCP   3d5h
+miklat-gateway          ClusterIP   10.43.68.255    <none>        8000/TCP   3d5h
+miklat-photos           ClusterIP   10.43.2.179     <none>        8000/TCP   3d5h
+miklat-routes           ClusterIP   10.43.220.44    <none>        8000/TCP   3d5h
+miklat-service          ClusterIP   10.43.175.104   <none>        8000/TCP   3d5h
+miklat-walking-routes   ClusterIP   10.43.222.203   <none>        8000/TCP   3d5h
+osrm                    ClusterIP   10.43.61.129    <none>        5000/TCP   3d5h
+
+$ sudo k3s kubectl get ingress -n miklat-app
+NAME             CLASS   HOSTS   ADDRESS        PORTS   AGE
+miklat-ingress   nginx   *       83.229.70.64   80      2d1h

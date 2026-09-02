@@ -1,27 +1,27 @@
-# Диаграмма архитектуры — Задание 3 (Kubernetes)
+# Architecture Diagram — Task 3 (Kubernetes)
 
-Deployment View: namespace'ы, Deployment/Service, Ingress, границы трафика и разделение
-public/private. Рендерится нативно на GitHub (mermaid-блок ниже); альтернативно — готовый
-PNG рядом (`architecture-task3.png`), на случай просмотра вне GitHub.
+Deployment View: namespaces, Deployment/Service, Ingress, traffic boundaries and
+public/private separation. Renders natively on GitHub (Mermaid block below); a
+pre-rendered PNG is also included (`architecture-task3.png`) for viewing outside GitHub.
 
-Легенда (цвет = зона):
-- 🔴 **красный** — публичная зона (снаружи кластера/снаружи VPC): пользователь, Ingress-контроллер, Ingress-ресурс.
-- 🔵 **синий** — приватная зона внутри кластера (только `ClusterIP`, недостижимо снаружи): все 8 Deployment/Service, ConfigMap, Secret.
-- 🟢 **зелёный** — AWS-облако (Задание 2, Terraform): RDS, S3, SNS — вне кластера, доступ по сети/IAM.
-- ⬜ **серый пунктир** — продакшен `shelternearyou.online` на том же физическом сервере `mbdai`, вне scope этого задания, показан только для контекста изоляции.
+Legend (color = zone):
+- 🔴 **red** — public zone (outside the cluster / outside the VPC): user, Ingress controller, Ingress resource.
+- 🔵 **blue** — private zone inside the cluster (`ClusterIP` only, unreachable from outside): all 8 Deployment/Service, ConfigMap, Secret.
+- 🟢 **green** — AWS cloud (Task 2, Terraform): RDS, S3, SNS — outside the cluster, reached over the network/IAM.
+- ⬜ **grey dashed** — production `shelternearyou.online` on the same physical server `mbdai`, out of scope for this task, shown only for isolation context.
 
 ```mermaid
 flowchart TB
-    User(["Пользователь\n(браузер)"])
+    User(["User\n(browser)"])
 
     subgraph MBDAI["VPS mbdai"]
         direction TB
 
-        subgraph PROD["Docker Compose — продакшен shelternearyou.online (вне scope Задания 3, порты 80/443/27017/6379/...)"]
+        subgraph PROD["Docker Compose — production shelternearyou.online (out of scope for Task 3, ports 80/443/27017/6379/...)"]
             PRODSTACK["nginx + Node + MongoDB + Redis"]
         end
 
-        subgraph K3S["k3s кластер (единственная нода)"]
+        subgraph K3S["k3s cluster (single node)"]
             direction TB
 
             subgraph NSING["namespace: ingress-nginx"]
@@ -34,7 +34,7 @@ flowchart TB
                 ING["Ingress: miklat-ingress\nclass nginx · path / → frontend:8080"]
 
                 subgraph TFRONT["tier: frontend · SA: miklat-frontend-sa"]
-                    FE["Deployment: frontend\nService ClusterIP :8080\n(React+Vite статика, non-root nginx)"]
+                    FE["Deployment: frontend\nService ClusterIP :8080\n(React+Vite static, non-root nginx)"]
                 end
 
                 subgraph TBACK["tier: backend · SA: miklat-backend-sa"]
@@ -51,19 +51,19 @@ flowchart TB
                 end
 
                 CM[("ConfigMap\nmiklat-config")]
-                SEC[("Secret\nmiklat-secrets\n(Opaque, 6 ключей)")]
+                SEC[("Secret\nmiklat-secrets\n(Opaque, 6 keys)")]
             end
         end
     end
 
-    subgraph AWSCLOUD["AWS il-central-1 (Terraform, Задание 2)"]
+    subgraph AWSCLOUD["AWS il-central-1 (Terraform, Task 2)"]
         direction TB
         RDS[("RDS PostgreSQL+PostGIS")]
         S3[("S3: miklat-photos-tf-*")]
         SNS[("SNS: miklat-notifications-tf")]
     end
 
-    User -- "HTTP :30080 (публичная граница)" --> IC
+    User -- "HTTP :30080 (public boundary)" --> IC
     IC --> ING
     ING --> FE
     FE -- "/api/*" --> GW

@@ -1,0 +1,233 @@
+$ export MSYS_NO_PATHCONV=1
+$ docker run -it --rm -v "$(pwd):/workspace" -v "$HOME/.ssh:/root/.ssh:ro" miklat-ansible bash
+root@e41e1faa1181:/ansible# export ANSIBLE_CONFIG=/workspace/ansible/ansible.cfg
+root@e41e1faa1181:/ansible# cd /workspace/ansible
+root@e41e1faa1181:/workspace/ansible# ansible-playbook playbooks/base.yml
+root@e41e1faa1181:/workspace/ansible# ansible-playbook playbooks/nginx.yml
+root@e41e1faa1181:/workspace/ansible# ansible-playbook playbooks/deploy-backend.yml
+root@e41e1faa1181:/workspace/ansible# ansible-playbook playbooks/deploy-worker.yml
+
+PLAY [Base setup (all servers)] ***********************************************
+
+TASK [Gathering Facts] *********************************************************
+ok: [51.84.57.106]
+ok: [51.84.166.116]
+ok: [51.17.5.45]
+
+TASK [Update all packages] *****************************************************
+ok: [51.84.57.106]
+ok: [51.84.166.116]
+ok: [51.17.5.45]
+
+TASK [Install base packages] ***************************************************
+ok: [51.84.57.106]
+ok: [51.84.166.116]
+ok: [51.17.5.45]
+
+TASK [Create application system user] ******************************************
+ok: [51.84.57.106]
+ok: [51.84.166.116]
+ok: [51.17.5.45]
+
+TASK [Create application working directory] ************************************
+ok: [51.84.57.106]
+ok: [51.84.166.116]
+ok: [51.17.5.45]
+
+TASK [Check whether swap is already active] *************************************
+ok: [51.84.57.106]
+ok: [51.84.166.116]
+ok: [51.17.5.45]
+
+TASK [Allocate swap file] *******************************************************
+skipping: [51.84.166.116]
+skipping: [51.84.57.106]
+skipping: [51.17.5.45]
+
+TASK [Set swap file permissions (0600 — otherwise swapon refuses)] *************
+skipping: [51.84.166.116]
+skipping: [51.84.57.106]
+skipping: [51.17.5.45]
+
+TASK [Format file as swap] ******************************************************
+skipping: [51.84.166.116]
+skipping: [51.84.57.106]
+skipping: [51.17.5.45]
+
+TASK [Enable swap] **************************************************************
+skipping: [51.84.166.116]
+skipping: [51.84.57.106]
+skipping: [51.17.5.45]
+
+TASK [Add swap to fstab (survives reboot)] **************************************
+skipping: [51.84.166.116]
+skipping: [51.84.57.106]
+skipping: [51.17.5.45]
+
+PLAY RECAP ***********************************************************************
+51.17.5.45                 : ok=6    changed=0    unreachable=0    failed=0    skipped=5    rescued=0    ignored=0
+51.84.166.116              : ok=6    changed=0    unreachable=0    failed=0    skipped=5    rescued=0    ignored=0
+51.84.57.106               : ok=6    changed=0    unreachable=0    failed=0    skipped=5    rescued=0    ignored=0
+
+
+PLAY [Frontend — nginx + React/Vite build] ***************************************
+
+TASK [Gathering Facts] ***********************************************************
+ok: [51.84.166.116]
+
+TASK [Add NodeSource repository — Node.js 22 LTS (Vite 8, used by the frontend, requires Node >=20.19/22.12 because of node:util.styleText; the standard `dnf install nodejs` on Amazon Linux 2023 gives an outdated Node 18, on which the build fails: SyntaxError: node:util does not provide styleText)] ***
+changed: [51.84.166.116]
+
+TASK [Remove old nodejs/nodejs-npm from the stock AL2023 repository — the nodejs-npm package hard-requires exactly nodejs version 18.20.8, which makes dnf refuse to install nodejs 22 from NodeSource on top (a dependency conflict, not a broken repository)] ***
+changed: [51.84.166.116]
+
+TASK [Install nginx and Node.js 22 (from NodeSource — npm ships bundled with the nodejs package itself, no separate npm package needed)] ***
+changed: [51.84.166.116]
+
+TASK [Transfer frontend sources to the server (excluding node_modules/dist)] ****
+changed: [51.84.166.116]
+
+TASK [npm ci (install dependencies strictly per package-lock.json)] *************
+changed: [51.84.166.116]
+
+TASK [npm run build (build static assets into dist/)] ***************************
+changed: [51.84.166.116]
+
+TASK [Set owner of copied files to app_user] *************************************
+changed: [51.84.166.116]
+
+TASK [Allow nginx (worker process) traversal to dist/ — x permission on parent directories] ***
+ok: [51.84.166.116] => (item=/opt/miklat)
+changed: [51.84.166.116] => (item=/opt/miklat/frontend)
+ok: [51.84.166.116] => (item=/opt/miklat/frontend/dist)
+
+TASK [nginx config — reverse proxy /api/* to backend] ****************************
+ok: [51.84.166.116]
+
+TASK [Remove default nginx config (conflicts on listen 80 / server_name _)] ******
+ok: [51.84.166.116]
+
+TASK [Enable and start nginx] *****************************************************
+ok: [51.84.166.116]
+
+PLAY RECAP ************************************************************************
+51.84.166.116              : ok=12   changed=8    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+PLAY [Backend — gateway + service + comments] **************************************
+
+TASK [Gathering Facts] ***************************************************************
+ok: [51.84.57.106]
+
+TASK [Transfer service sources to the server] ******************************************
+changed: [51.84.57.106] => (item={'name': 'miklat-service', 'port': 8001})
+changed: [51.84.57.106] => (item={'name': 'miklat-comments', 'port': 8002})
+changed: [51.84.57.106] => (item={'name': 'miklat-gateway', 'port': 8000})
+
+TASK [Install Python 3.12 (the default python3 on AL2023 is version 3.9; the service code uses the "X | None" annotation syntax introduced only in Python 3.10+ — on 3.9 this raises a TypeError already at module import. 3.12 was chosen to match the version used in the services' Dockerfile from Phase 1)] ***
+ok: [51.84.57.106]
+
+TASK [Remove the venv if it was already created against the wrong python3.9 (re-run after the Python version fix)] ***
+changed: [51.84.57.106] => (item={'name': 'miklat-service', 'port': 8001})
+changed: [51.84.57.106] => (item={'name': 'miklat-comments', 'port': 8002})
+changed: [51.84.57.106] => (item={'name': 'miklat-gateway', 'port': 8000})
+
+TASK [Create venv (on Python 3.12) and install dependencies] ***************************
+changed: [51.84.57.106] => (item={'name': 'miklat-service', 'port': 8001})
+changed: [51.84.57.106] => (item={'name': 'miklat-comments', 'port': 8002})
+changed: [51.84.57.106] => (item={'name': 'miklat-gateway', 'port': 8000})
+
+TASK [Set owner of service files to app_user] ********************************************
+changed: [51.84.57.106] => (item={'name': 'miklat-service', 'port': 8001})
+changed: [51.84.57.106] => (item={'name': 'miklat-comments', 'port': 8002})
+changed: [51.84.57.106] => (item={'name': 'miklat-gateway', 'port': 8000})
+
+TASK [Generate .env for each service] *****************************************************
+changed: [51.84.57.106] => (item={'name': 'miklat-service', 'port': 8001})
+ok: [51.84.57.106] => (item={'name': 'miklat-comments', 'port': 8002})
+ok: [51.84.57.106] => (item={'name': 'miklat-gateway', 'port': 8000})
+
+TASK [Install systemd unit for each service] ***********************************************
+ok: [51.84.57.106] => (item={'name': 'miklat-service', 'port': 8001})
+ok: [51.84.57.106] => (item={'name': 'miklat-comments', 'port': 8002})
+ok: [51.84.57.106] => (item={'name': 'miklat-gateway', 'port': 8000})
+
+TASK [Reload systemd immediately (if units changed), then start services] ******************
+TASK [Enable and (re)start services] ********************************************************
+changed: [51.84.57.106] => (item={'name': 'miklat-service', 'port': 8001})
+changed: [51.84.57.106] => (item={'name': 'miklat-comments', 'port': 8002})
+changed: [51.84.57.106] => (item={'name': 'miklat-gateway', 'port': 8000})
+
+PLAY RECAP ***********************************************************************************
+51.84.57.106               : ok=9    changed=6    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+
+PLAY [Worker — routes + walking-routes + photos + OSRM] ***************************************
+
+TASK [Gathering Facts] ******************************************************************************
+ok: [51.17.5.45]
+
+TASK [Transfer service sources to the server] ***********************************************************
+changed: [51.17.5.45] => (item={'name': 'miklat-routes', 'port': 8003})
+changed: [51.17.5.45] => (item={'name': 'miklat-walking-routes', 'port': 8004})
+changed: [51.17.5.45] => (item={'name': 'miklat-photos', 'port': 8005})
+
+TASK [Install Python 3.12 (the default python3 on AL2023 is version 3.9; the service code uses the "X | None" annotation syntax introduced only in Python 3.10+ — on 3.9 this raises a TypeError already at module import. 3.12 was chosen to match the version used in the services' Dockerfile from Phase 1)] ***
+ok: [51.17.5.45]
+
+TASK [Remove the venv if it was already created against the wrong python3.9 (re-run after the Python version fix)] ***
+changed: [51.17.5.45] => (item={'name': 'miklat-routes', 'port': 8003})
+changed: [51.17.5.45] => (item={'name': 'miklat-walking-routes', 'port': 8004})
+changed: [51.17.5.45] => (item={'name': 'miklat-photos', 'port': 8005})
+
+TASK [Create venv (on Python 3.12) and install dependencies] ***********************************************
+changed: [51.17.5.45] => (item={'name': 'miklat-routes', 'port': 8003})
+changed: [51.17.5.45] => (item={'name': 'miklat-walking-routes', 'port': 8004})
+changed: [51.17.5.45] => (item={'name': 'miklat-photos', 'port': 8005})
+
+TASK [Set owner of service files to app_user] ***************************************************************
+changed: [51.17.5.45] => (item={'name': 'miklat-routes', 'port': 8003})
+changed: [51.17.5.45] => (item={'name': 'miklat-walking-routes', 'port': 8004})
+changed: [51.17.5.45] => (item={'name': 'miklat-photos', 'port': 8005})
+
+TASK [Generate .env for each service] *************************************************************************
+ok: [51.17.5.45] => (item={'name': 'miklat-routes', 'port': 8003})
+ok: [51.17.5.45] => (item={'name': 'miklat-walking-routes', 'port': 8004})
+changed: [51.17.5.45] => (item={'name': 'miklat-photos', 'port': 8005})
+
+TASK [Install systemd unit for each python service] *************************************************************
+ok: [51.17.5.45] => (item={'name': 'miklat-routes', 'port': 8003})
+ok: [51.17.5.45] => (item={'name': 'miklat-walking-routes', 'port': 8004})
+ok: [51.17.5.45] => (item={'name': 'miklat-photos', 'port': 8005})
+
+TASK [Install Docker] ********************************************************************************************
+ok: [51.17.5.45]
+
+TASK [Enable and start Docker] ************************************************************************************
+ok: [51.17.5.45]
+
+TASK [Create directory for OSRM data] *****************************************************************************
+changed: [51.17.5.45]
+
+TASK [Transfer the pre-processed OSRM graph (osrm/data/*) from the local machine — this is already the finished output of osrm/prepare-data.sh (Phase 1, step 4); recomputing it on a t3.micro is unnecessary and risky memory-wise] ***
+changed: [51.17.5.45]
+
+TASK [systemd unit for OSRM (wrapper over docker run)] ****************************************************************
+ok: [51.17.5.45]
+
+TASK [Reload systemd, then start all worker services] ******************************************************************
+TASK [Enable and (re)start python services] *****************************************************************************
+changed: [51.17.5.45] => (item={'name': 'miklat-routes', 'port': 8003})
+changed: [51.17.5.45] => (item={'name': 'miklat-walking-routes', 'port': 8004})
+changed: [51.17.5.45] => (item={'name': 'miklat-photos', 'port': 8005})
+
+TASK [Enable and (re)start OSRM] *************************************************************************************
+changed: [51.17.5.45]
+
+PLAY RECAP ****************************************************************************************************************
+51.17.5.45                 : ok=15   changed=9    unreachable=0    failed=0    skipped=0    rescued=0    ignored=0
+
+Note: "changed" above (beyond base.yml, which is fully idempotent — changed=0) is expected on
+these three deploy playbooks: they intentionally re-transfer sources, rebuild the frontend,
+recreate the venv and restart services on every run (a deploy playbook, not a drift-only
+config playbook) — the important result is failed=0 across all three re-runs.

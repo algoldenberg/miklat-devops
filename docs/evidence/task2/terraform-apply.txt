@@ -1,0 +1,60 @@
+$ cd terraform
+$ terraform apply
+data.aws_caller_identity.current: Reading...
+aws_vpc.main: Refreshing state... [id=vpc-0ed461b2f49fa62bf]
+aws_key_pair.main: Refreshing state... [id=miklat-key]
+aws_iam_role.app: Refreshing state... [id=miklat-app-role]
+aws_sns_topic.notifications: Refreshing state... [id=arn:aws:sns:il-central-1:232779827681:miklat-notifications-tf]
+data.aws_caller_identity.current: Read complete after 0s [id=232779827681]
+aws_s3_bucket.photos: Refreshing state... [id=miklat-photos-tf-232779827681]
+aws_sns_topic_subscription.email: Refreshing state... [id=arn:aws:sns:il-central-1:232779827681:miklat-notifications-tf:c9d5d571-190b-4bbd-942f-b8467bb34bb3]
+aws_s3_bucket_public_access_block.photos: Refreshing state... [id=miklat-photos-tf-232779827681]
+aws_iam_policy.app: Refreshing state... [id=arn:aws:iam::232779827681:policy/miklat-app-policy]
+aws_s3_bucket_server_side_encryption_configuration.photos: Refreshing state... [id=miklat-photos-tf-232779827681]
+aws_internet_gateway.main: Refreshing state... [id=igw-0d76bc6fea9866552]
+aws_subnet.public[1]: Refreshing state... [id=subnet-00c411384274d24cd]
+aws_subnet.public[0]: Refreshing state... [id=subnet-00eca84436cb266ed]
+aws_security_group.frontend: Refreshing state... [id=sg-0f9a1b33d552d1f7c]
+aws_route_table.public: Refreshing state... [id=rtb-04dd51cbecda9e0a3]
+aws_security_group.backend: Refreshing state... [id=sg-09436fe080aeff899]
+aws_route_table_association.public[1]: Refreshing state... [id=rtbassoc-0caffdc05ca2ec578]
+aws_route_table_association.public[0]: Refreshing state... [id=rtbassoc-00751262fa86173db]
+aws_db_subnet_group.main: Refreshing state... [id=miklat-db-subnet-group]
+aws_instance.frontend: Refreshing state... [id=i-0b0b8879561934190]
+aws_security_group.worker: Refreshing state... [id=sg-0d09fa4e020bb52a2]
+aws_security_group.rds: Refreshing state... [id=sg-0f37aff6bf8be6bc2]
+aws_db_instance.main: Refreshing state... [id=db-YLI3ERRJROQZFXUIR5TH6A7HEE]
+aws_iam_instance_profile.app: Refreshing state... [id=miklat-app-instance-profile]
+aws_iam_role_policy_attachment.app: Refreshing state... [id=miklat-app-role-20260829130549254600000001]
+aws_instance.worker: Refreshing state... [id=i-0ca4fbe6604a9c6fd]
+aws_instance.backend: Refreshing state... [id=i-0f0b27c383ce6a2a0]
+
+No changes. Your infrastructure matches the configuration.
+
+Terraform has compared your real infrastructure against your configuration
+and found no differences, so no changes are needed.
+
+Apply complete! Resources: 0 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+aws_region = "il-central-1"
+backend_private_ip = "10.20.1.236"
+backend_public_ip = "51.84.57.106"
+db_endpoint = "miklat-db.c986msyg4duz.il-central-1.rds.amazonaws.com:5432"
+db_name = "miklat"
+frontend_public_ip = "51.84.166.116"
+s3_photos_bucket = "miklat-photos-tf-232779827681"
+sns_topic_arn = "arn:aws:sns:il-central-1:232779827681:miklat-notifications-tf"
+worker_private_ip = "10.20.1.153"
+worker_public_ip = "51.17.5.45"
+
+Confirms `terraform apply` runs cleanly and idempotently against the live
+infrastructure: all 27 resources refreshed from real AWS state, zero drift
+detected (0 added, 0 changed, 0 destroyed). This is the expected, healthy
+outcome after the AMI-pin fix (see terraform-plan.txt in this same folder
+for the drift discovery/fix story) — `apply` is safe to re-run at any time
+without side effects, which is the point of Infrastructure as Code done
+correctly. Outputs match the real, currently deployed values used
+throughout this project's evidence (frontend/backend/worker IPs, RDS
+endpoint, S3 bucket, SNS topic ARN).
