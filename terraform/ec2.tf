@@ -1,11 +1,16 @@
 # 3 EC2-инстанса — frontend/backend/worker (см. обоснование деления в
-# security_groups.tf). AMI берём динамически через публичный SSM-параметр
-# (Amazon Linux 2023, x86_64) — не хардкодим id, который отличается по
-# регионам и версиям; тот же принцип "не хардкодить", что и во всём проекте.
-
-data "aws_ssm_parameter" "al2023_ami" {
-  name = "/aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64"
-}
+# security_groups.tf). AMI ЗАФИКСИРОВАН явным ID (var.ami_id), а не взят
+# динамически через SSM-параметр "latest" — так было изначально, но при
+# сборке evidence для Задания 2 (02.09.2026) обнаружилось, что значение
+# SSM-параметра "latest" со временем меняется само по себе (AWS выпускает
+# новые версии AL2023), из-за чего `terraform plan` через несколько дней
+# после `apply` начинал показывать "-/+ destroy and then create replacement"
+# для всех трёх инстансов без единого реального изменения конфигурации —
+# случайный `terraform apply` в этот момент снёс бы всю инфраструктуру.
+# Исправлено закреплением конкретного AMI ID (реальный AMI, на котором
+# сейчас развёрнуты все три инстанса) — обновлять сознательно, только
+# когда реально нужна новая версия ОС, тогда apply пересоздаст инстансы
+# намеренно, а не случайно.
 
 # Key Pair — из уже существующего ПУБЛИЧНОГО ключа пользователя (см.
 # variables.tf::ssh_public_key_path). Terraform приватный ключ не создаёт и
@@ -25,7 +30,7 @@ resource "aws_key_pair" "main" {
 }
 
 resource "aws_instance" "frontend" {
-  ami                    = data.aws_ssm_parameter.al2023_ami.value
+  ami                    = var.ami_id
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.frontend.id]
@@ -38,7 +43,7 @@ resource "aws_instance" "frontend" {
 }
 
 resource "aws_instance" "backend" {
-  ami                    = data.aws_ssm_parameter.al2023_ami.value
+  ami                    = var.ami_id
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.backend.id]
@@ -54,7 +59,7 @@ resource "aws_instance" "backend" {
 }
 
 resource "aws_instance" "worker" {
-  ami                    = data.aws_ssm_parameter.al2023_ami.value
+  ami                    = var.ami_id
   instance_type          = var.instance_type
   subnet_id              = aws_subnet.public[0].id
   vpc_security_group_ids = [aws_security_group.worker.id]
