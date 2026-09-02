@@ -218,6 +218,57 @@ EOF
                 archiveArtifacts artifacts: 'build-metadata.txt', allowEmptyArchive: true
             }
         }
+
+        stage('Trigger CD') {
+            // Фаза 4, шаг 6: автоматическая связка CI->CD. Для каждого
+            // изменившегося сервиса запускаем downstream job miklat-cd с
+            // теми же тремя параметрами, которые он ожидает (см.
+            // Jenkinsfile-cd/jobDsl в jenkins/values.yaml): SERVICE_NAME
+            // (то же самое имя, что уже посчитано в CHANGED_SERVICES —
+            // ровно тот же список значений, что и choiceParam у miklat-cd),
+            // IMAGE_TAG (тот же GIT_SHA, которым kaniko только что
+            // реально тегировал и запушило образ) и IMAGE_DIGEST (для
+            // traceability в логах CD, не участвует в самом деплое).
+            //
+            // Читаем digest-файл именно внутри container('kaniko') — то же
+            // самое место, откуда его уже читает стадия Publish metadata
+            // (те файлы физически лежат в файловой системе САМОГО
+            // контейнера kaniko, а не в общем workspace-volume, который у
+            // всех контейнеров пода смонтирован на /home/jenkins/agent —
+            // из другого контейнера их не увидеть).
+            //
+            // wait: false (без propagate — он влияет только на поведение
+            // ожидания результата, а без wait не используется) — CI и CD
+            // сознательно разделены (см. principle CI/CD separation в
+            // README): CI считает свою работу выполненной, как только
+            // образ собран, запушен и job деплоя поставлен в очередь;
+            // сам деплой, его rollout/verify/smoke-test и explicit
+            // rollback — целиком зона ответственности Jenkinsfile-cd,
+            // со своим отдельным Console Output. Не делаем CI пайплайн
+            // заложником длительности helm upgrade --wait/rollback CD
+            // (у miklat-cd свои собственные таймауты).
+            when {
+                expression { return env.CHANGED_SERVICES?.trim() }
+            }
+            steps {
+                container('kaniko') {
+                    script {
+                        env.CHANGED_SERVICES.split(',').each { svc ->
+                            def digestFile = "/workspace/digest-${svc}.txt"
+                            def digest = sh(script: "cat ${digestFile}", returnStdout: true).trim()
+                            echo "Запускаю miklat-cd: SERVICE_NAME=${svc} IMAGE_TAG=${env.GIT_SHA} IMAGE_DIGEST=${digest}"
+                            build job: 'miklat-cd',
+                                  parameters: [
+                                      string(name: 'SERVICE_NAME', value: svc),
+                                      string(name: 'IMAGE_TAG', value: env.GIT_SHA),
+                                      string(name: 'IMAGE_DIGEST', value: digest)
+                                  ],
+                                  wait: false
+                        }
+                    }
+                }
+            }
+        }
     }
 
     post {
