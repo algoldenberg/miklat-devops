@@ -1,0 +1,242 @@
+# jenkins/network-policy.yaml
+# Фаза 4, шаг 7: NetworkPolicy для namespace `jenkins` — сетевая (L3/L4)
+# изоляция трафика в дополнение к уже реализованному RBAC
+# (jenkins/cd-rbac.yaml, шаг 5).
+#
+# ВАЖНАЯ ОГОВОРКА (проверено, не предположение): k3s на `mbdai` работает на
+# дефолтном CNI `flannel`, который НЕ enforce'ит NetworkPolicy — flannel не
+# реализует сетевой плагин с поддержкой NetworkPolicy API (в отличие от
+# Calico/Canal/Cilium). Манифесты ниже синтаксически и семантически
+# корректны и ничего не сломают при apply, но физически ни один из описанных
+# ниже запретов на этом конкретном кластере СЕЙЧАС реально не блокируется —
+# RBAC (шаг 5) остаётся единственным реально работающим механизмом
+# ограничения на этом кластере. Эти манифесты — готовая основа: если CNI
+# когда-нибудь заменят на Calico/Canal, правила начнут реально применяться
+# без единой правки.
+#
+# Все значения (labels, IP API-сервера, порты Service) — реальные, получены
+# командами на живом кластере (kubectl get pod/svc/endpoints/namespace
+# --show-labels), не угаданы.
+
+---
+# 1. Baseline: полный запрет ingress+egress для ВСЕХ подов namespace jenkins
+# по умолчанию. Правила разных NetworkPolicy, выбирающих один и тот же под,
+# складываются как ИЛИ — эта policy лишь задаёт "нет правила = запрет", а не
+# финальный список разрешений (он — в policy 2-6 ниже).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: jenkins
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+
+---
+# 2. DNS нужен всем подам namespace (контроллеру и обоим типам агентов) —
+# без него не резолвятся ни ClusterIP-сервисы (jenkins-agent, сервисы
+# приложения), ни внешние домены (github.com, ghcr.io, registry.npmjs.org и
+# т.д.). kube-dns/CoreDNS — в namespace kube-system, помечен стандартным
+# неизменяемым label kubernetes.io/metadata.name (Kubernetes проставляет его
+# сам, начиная с 1.21+) — подтверждено kubectl get namespace kube-system
+# --show-labels.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: jenkins
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+
+---
+# 3. Ingress к Jenkins-контроллеру (под jenkins-0, реальные labels чарта —
+# app.kubernetes.io/component=jenkins-controller,
+# app.kubernetes.io/instance=jenkins — подтверждено kubectl get pod
+# jenkins-0 --show-labels) — только из двух источников:
+#   а) namespace ingress-nginx, порт 8080 — единственный внешний путь,
+#      которым в контроллер попадает трафик (/github-webhook/ через
+#      публичный Ingress, реально подтверждено в этом же шаге 7 —
+#      X-Jenkins-заголовок только на этом пути).
+#   б) сами agent-поды этого же namespace
+#      (jenkins/jenkins-jenkins-agent=true — стандартный label, который
+#      Kubernetes-плагин сам проставляет на ЛЮБОЙ agent-под, ci-agent или
+#      cd-agent — подтверждено в реальных Console Output обоих job'ов,
+#      Фаза 4 шаги 4-6), порт 50000 — обратный JNLP-туннель, которым агент
+#      подключается к контроллеру
+#      (env JENKINS_TUNNEL=jenkins-agent.jenkins.svc.cluster.local:50000).
+#
+# Отдельно не описываем kubectl port-forward (единственный способ доступа
+# человека к Jenkins UI, см. шаги 1/4) — это не обычный pod-to-pod трафик
+# через CNI, а проксирование kubelet/API-сервером напрямую в netns пода; в
+# большинстве реализаций (в т.ч. Calico) NetworkPolicy на него не
+# распространяется — перепроверить отдельно, если реально сменим CNI.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-controller-ingress
+  namespace: jenkins
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: jenkins-controller
+      app.kubernetes.io/instance: jenkins
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: ingress-nginx
+      ports:
+        - protocol: TCP
+          port: 8080
+    - from:
+        - podSelector:
+            matchLabels:
+              jenkins/jenkins-jenkins-agent: "true"
+      ports:
+        - protocol: TCP
+          port: 50000
+
+---
+# 4. Egress контроллера: к k8s API-серверу (Kubernetes-плагин сам
+# создаёт/удаляет agent-поды через API — без этого доступа агенты вообще не
+# смогут запускаться). На k3s API-сервер — не под, а часть самого
+# k3s-процесса на ноде: Service kubernetes в namespace default указывает
+# EndpointSlice прямо на публичный IP ноды mbdai (подтверждено: kubectl get
+# endpoints kubernetes -n default → 83.229.70.64:6443 — тот же IP, что уже
+# используется в SG-правиле RDS, terraform/variables.tf mbdai_public_ip).
+# Это не под и не namespace, а конкретный IP — адресуем через ipBlock, не
+# через selector.
+#
+# Также разрешаем исходящий HTTPS (443) в интернет — Jenkins Update Center
+# (updates.jenkins.io/get.jenkins.io) резолвится на много разных IP/CDN,
+# сужать до конкретных адресов нецелесообразно (пришлось бы вручную
+# поддерживать список в актуальном состоянии) — тот же принцип, что и для
+# agent-подов ниже (policy 5).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-controller-egress
+  namespace: jenkins
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: jenkins-controller
+      app.kubernetes.io/instance: jenkins
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 83.229.70.64/32
+      ports:
+        - protocol: TCP
+          port: 6443
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# 5. Egress ЛЮБОГО agent-пода (и ci-agent, и cd-agent — общий label
+# jenkins/jenkins-jenkins-agent=true) обратно к контроллеру по JNLP (порт
+# 50000) — обязательное условие, без него агент не может ни
+# зарегистрироваться, ни получить задачи. Плюс исходящий HTTPS (443) в
+# интернет — общая потребность обоих типов агентов: git (github.com),
+# kaniko (pull базовых образов из docker.io/gcr.io + push в ghcr.io), pip
+# (pypi.org/files.pythonhosted.org), npm (registry.npmjs.org). Все эти
+# домены резолвятся на много разных IP без фиксированного пула — сужать
+# нецелесообразно (тот же принцип, что и в policy 4 для Update Center).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-agent-egress-common
+  namespace: jenkins
+spec:
+  podSelector:
+    matchLabels:
+      jenkins/jenkins-jenkins-agent: "true"
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: jenkins-controller
+              app.kubernetes.io/instance: jenkins
+      ports:
+        - protocol: TCP
+          port: 50000
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+
+---
+# 6. Egress ТОЛЬКО cd-agent (label jenkins/label=cd-agent — специфичный
+# label конкретного pod template'а, отдельный от общего
+# jenkins/jenkins-jenkins-agent=true из policy 5) — дополнительно к общим
+# правилам выше:
+#   а) к k8s API-серверу (тот же ipBlock/порт, что и у контроллера, policy
+#      4) — нужно helm/kubectl внутри Jenkinsfile-cd (Validate manifests,
+#      Deploy, Rollout status, Authenticate). ci-agent этого правила
+#      сознательно НЕ получает — Jenkinsfile-ci никогда не вызывает
+#      kubectl/helm, и на сетевом уровне (не только на уровне RBAC, уже
+#      подтверждённого в начале этого шага через kubectl auth can-i) у
+#      него просто нет маршрута к API-серверу.
+#   б) к namespace miklat-app, порты 8000 (6 python-сервисов) и 8080
+#      (frontend) — нужно стадии Smoke test (curl напрямую на ClusterIP
+#      сервиса конкретного сервиса). Сам деплой (helm upgrade) идёт через
+#      API-сервер (правило а), не напрямую к подам приложения — правило
+#      (б) нужно исключительно для смок-теста.
+#
+# Итоговый эффект (при реальном enforcement): ci-agent физически не сможет
+# достучаться ни до API-сервера, ни до namespace miklat-app — то же самое,
+# что уже доказано на уровне RBAC (kubectl auth can-i в начале шага 7), но
+# теперь ещё и на уровне сети — два независимых слоя защиты.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-cd-agent-egress
+  namespace: jenkins
+spec:
+  podSelector:
+    matchLabels:
+      jenkins/label: cd-agent
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 83.229.70.64/32
+      ports:
+        - protocol: TCP
+          port: 6443
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: miklat-app
+      ports:
+        - protocol: TCP
+          port: 8000
+        - protocol: TCP
+          port: 8080
