@@ -61,4 +61,4 @@ def ready():
         "status": "ok" if overall_ok else "degraded",
         "database": "up" if db_ok else "down",
         "s3": s3_status,
-    }
+    }# canary: phase4 step6 e2e test 2026-09-02T15:21:40Z
