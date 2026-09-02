@@ -938,3 +938,133 @@ Gateway" в Terraform Задания 2). Разделение public/internal т
   реализованы в этой итерации (см. обоснование в соответствующих Security-подразделах выше), оставлены
   как возможные дальнейшие улучшения.
 
+## Jenkins CI/CD (Задание 4)
+
+Jenkins развёрнут в том же k3s-кластере на `mbdai`, в отдельном namespace `jenkins` (не `miklat-app`). Весь Jenkins — как код: Helm chart с зафиксированной версией, JCasC и Job DSL создают контроллер, agent pod template'ы и оба job'а (`miklat-ci`/`miklat-cd`) без единой ручной настройки через UI.
+
+Диаграммы (Deployment View + Pipeline Flow) — задел на шаг 8, здесь пока текстовое описание.
+
+### Файлы (`jenkins/`)
+
+| Файл | Что содержит |
+|---|---|
+| `values.yaml` | Helm values для чарта `jenkinsci/jenkins` (`5.9.29`): контроллер (образ, PVC, resources/probes, securityContext, JCasC), `agent.podTemplates` (`ci-agent`, `cd-agent`), `configScripts` (`basic-settings`, `seed-jobs` — Job DSL) |
+| `cd-rbac.yaml` | `ServiceAccount jenkins-cd` (namespace `jenkins`) + `Role`/`RoleBinding` в namespace `miklat-app` |
+| `network-policy.yaml` | 6 объектов `NetworkPolicy` для namespace `jenkins` (см. Security ниже) |
+| `scripts/install-jenkins.sh` | `helm repo add/update` + идемпотентный `helm install`/`upgrade` |
+| `scripts/configure-jenkins.sh` | создание `jenkins-admin-secret` (пароль нигде не пишется на диск/в лог) |
+| `scripts/create-jobs.sh` | форс JCasC reload + проверка, что оба job'а реально созданы |
+| `scripts/verify-jenkins.sh` | комплексная проверка: под/PVC, HTTP `/login`, оба job'а, pod-template'ы облака |
+
+`Jenkinsfile-ci`/`Jenkinsfile-cd` лежат в корне репозитория — Job DSL ссылается на них через `scriptPath`, Jenkins подтягивает их из git заново при каждом запуске (правки не требуют переустановки чарта).
+
+### Jenkins-контроллер
+
+Namespace `jenkins`, официальный Helm chart `jenkinsci/jenkins`, версия чарта зафиксирована (`5.9.29`), образ контроллера — `jenkins/jenkins:2.555.3-lts-jdk21` (LTS, без `latest`-алиасов). PVC 8Gi (`local-path`), `runAsNonRoot`/`allowPrivilegeEscalation: false`, resources requests/limits, startup/liveness/readiness пробы на `/login`. `numExecutors: 0` — контроллер сам ничего не собирает, только диспетчер; вся реальная работа — на ephemeral agent-подах.
+
+### Agent pod template'ы
+
+- **`ci-agent`** — 4 контейнера: `git` (checkout), `python-tools`/`python:3.12-slim` (lint/тесты backend), `node-tools`/`node:22-slim` (lint/сборка frontend), `kaniko`/`gcr.io/kaniko-project/executor:v1.23.2-debug` (сборка и push образов без Docker socket, `privileged: false`).
+- **`cd-agent`** — контейнер `kubectl-helm`/`dtzar/helm-kubectl:4.2.3`, работает под выделенным `ServiceAccount jenkins-cd` (в отличие от `ci-agent`, который использует дефолтный `jenkins` SA).
+
+Оба template'а — `podRetention: Never` (ephemeral workspace, ничего не переживает между сборками).
+
+### Jobs как код
+
+Плагин `job-dsl` + JCasC-ключ `jobs:` (`configScripts.seed-jobs`) создают `miklat-ci` и `miklat-cd` автоматически при каждом старте/reload контроллера. `miklat-cd` параметризован тремя параметрами: `SERVICE_NAME` (`choiceParam`, выпадающий список из 7 сервисов — необходимое уточнение сверх буквальной формулировки задания, без него по одному только commit-SHA невозможно определить, какой именно `Deployment`/ключ `values.yaml` обновлять при параллельных изменениях нескольких сервисов), `IMAGE_TAG`, `IMAGE_DIGEST`.
+
+### `Jenkinsfile-ci` — этапы
+
+`Checkout` → `Validate` (структура сервисов + Dockerfile) → `Lint` (параллельно: `ruff` с запиненной версией + явным `--select`, `oxlint`) → `Tests` (параллельно: `pytest` по сервисам без живой БД, `npm run build`) → `Detect changed services` (`git diff` по префиксам путей) → `Build & push (kaniko)` (только изменившиеся сервисы, тег = commit-SHA, push в GHCR) → `Publish metadata` (архивирует тег+digest) → `Trigger CD` (запускает `miklat-cd` для каждого изменившегося сервиса, см. ниже).
+
+Триггер — GitHub webhook (`githubPush()`), путь `/github-webhook/` через уже существующий публичный Ingress, с проверкой HMAC-подписи (`X-Hub-Signature-256`) по секрету `github-webhook-secret` — единственный путь Jenkins, открытый наружу (см. Security ниже).
+
+### `Jenkinsfile-cd` — этапы
+
+`Validate parameters` → `Validate manifests` (`helm lint` + `helm upgrade --install --dry-run=client`) → `Authenticate` (`kubectl auth can-i`) → `Deploy` (`helm upgrade --install --reuse-values --set <key>.imageTag=<TAG> --wait`) → `Rollout status` → `Verify Pods/Services` → `Smoke test` (реальный `curl` изнутри уже существующего контейнера `kubectl-helm`); `post { failure { helm rollback <RELEASE> 0 } }` — явный откат на предыдущую ревизию при любом сбое, проверенный намеренным прогоном с несуществующим тегом образа (см. `miklat-progress.md`, шаг 5).
+
+Деплой идёт через `helm/miklat-app/` — существующие манифесты `k8s/` обёрнуты в настоящий Helm-чарт (архитектурное решение шага 5, согласовано с пользователем: буквальная формулировка задания требует `helm upgrade --install`, а исходное приложение из Задания 3 было развёрнуто плоскими `kubectl apply`-манифестами).
+
+### Связка CI → CD
+
+Стадия `Trigger CD` в `Jenkinsfile-ci` вызывает `build job: 'miklat-cd', parameters: [...], wait: false` — по одному вызову на каждый сервис из `CHANGED_SERVICES`, с параметрами `SERVICE_NAME`/`IMAGE_TAG=GIT_SHA`/`IMAGE_DIGEST`, считанными из того же файла, что уже публикует `Publish metadata`. `wait: false` — осознанное решение по принципу CI/CD separation (CI считает себя завершённым, как только образ собран и job деплоя поставлен в очередь; длительность и результат самого деплоя, включая возможный `helm rollback`, не должны влиять на длительность/статус CI). Плагин `pipeline-build-step` (даёт сам шаг `build`) не добавлялся отдельно — подтверждено как транзитивная зависимость уже установленного по умолчанию `workflow-aggregator`.
+
+Реальный сквозной прогон подтверждён (см. `miklat-progress.md`, шаг 6): канареечный коммит в `services/miklat-photos/` → webhook → `miklat-ci` собрал и запушил образ, стадия `Trigger CD` поставила `miklat-cd` в очередь → `miklat-cd` запустился автоматически (`Started by upstream project "miklat-ci"`) с правильными параметрами → полный деплой с тем же самым тегом образа, что собрал CI, Smoke-test `HTTP 200`.
+
+### Как развернуть
+
+```bash
+# на mbdai, из корня репозитория
+./jenkins/scripts/configure-jenkins.sh   # один раз — создать jenkins-admin-secret
+./jenkins/scripts/install-jenkins.sh     # helm install/upgrade jenkins (идемпотентно)
+./jenkins/scripts/create-jobs.sh         # форс JCasC reload, если job'ы не создались сами
+./jenkins/scripts/verify-jenkins.sh      # под/PVC/HTTP/job'ы/pod-template'ы одной командой
+```
+
+Доступ к UI — только через `kubectl port-forward -n jenkins svc/jenkins 8090:8080` (см. Security ниже, наружу Jenkins UI не публикуется). GitHub webhook настраивается на `https://<домен или IP mbdai>/github-webhook/` (репозиторий → Settings → Webhooks), секрет — тот же, что в Jenkins credential `github-webhook-secret`.
+
+Удаление:
+
+```bash
+helm uninstall jenkins -n jenkins
+kubectl delete namespace jenkins
+```
+
+### Security
+
+#### RBAC
+
+Два разных `ServiceAccount`, оба **без `cluster-admin`** и без единой `ClusterRole`:
+
+- **`jenkins`** (дефолтный SA чарта, namespace `jenkins`) — используется и самим контроллером, и `ci-agent` (для `ci-agent` явно не переопределялся). Реально подтверждено на живом кластере (`kubectl auth can-i`, а не предположение):
+  - `kubectl auth can-i create deployments --all-namespaces --as=system:serviceaccount:jenkins:jenkins` → `no`;
+  - `kubectl auth can-i create deployments -n miklat-app --as=...` → `no`;
+  - `--list` в **своём** namespace `jenkins` показывает реальные, но узкие права: `pods` (включая `exec`) и `persistentvolumeclaims` (полный CRUD — нужно самому Kubernetes-плагину, чтобы порождать/удалять agent-поды и их PVC), `configmaps`/`events`/`pods/log` (read-only) — ни `secrets`, ни `deployments`, ни `services` там нет;
+  - `--list` в namespace `miklat-app` — пусто (только универсальные `selfsubject*`, которые есть у любого аутентифицированного субъекта).
+
+  Итог: `miklat-ci` физически не может создать/изменить ни один `Deployment`/`Secret`/`Service` нигде в кластере — ни в своём namespace, ни тем более в `miklat-app`.
+
+- **`jenkins-cd`** (`jenkins/cd-rbac.yaml`, шаг 5) — namespace `jenkins` (там же работает `cd-agent`), с `RoleBinding` в `miklat-app` (кросс-namespace, без `ClusterRole`). Реально подтверждено:
+  - `--list` в `miklat-app` — полный CRUD ровно на то, чем управляет Helm-чарт приложения: `configmaps`/`events`/`secrets`/`serviceaccounts`/`services`/`deployments.apps`/`replicasets.apps`/`ingresses.networking.k8s.io`, плюс read-only `pods`/`pods/log`;
+  - `--list` в **своём** namespace `jenkins` — пусто (только `selfsubject*`) — `jenkins-cd` физически живёт в `jenkins`, но не имеет там ни единого права, все его реальные права — исключительно кросс-namespace в `miklat-app`.
+
+  `secrets` включены в правила вынужденно, не по недосмотру: Helm 3 хранит историю релизов как собственные `Secret` в ТОМ ЖЕ namespace, куда деплоит чарт — значит, любой `ServiceAccount`, способный выполнять `helm upgrade --install`, неизбежно может читать/писать любые `Secret` в `miklat-app`, включая `miklat-secrets` (пароль RDS, admin-ключ, AWS-креды приложения). Задокументированный компромисс, не расширение прав сверх необходимого.
+
+#### Secrets и маскирование в логах
+
+Три независимых механизма, ни один не пересекается с другими:
+
+- **Jenkins Credentials** (`Manage Jenkins → Credentials`, реально проверено в UI — ровно 2 объекта, лишних нет): `ghcr-credentials` (Username with password — classic PAT с scope `write:packages`; fine-grained PAT не подошёл — GitHub на момент написания не поддерживает fine-grained-токены для push в GHCR-пакеты) — используется в `Jenkinsfile-ci` через `withCredentials` для аутентификации kaniko в registry; `github-webhook-secret` (Secret text) — используется плагином `github` для проверки `X-Hub-Signature-256` на входящих вебхуках. Маскирование подтверждено реальным Console Output: `Masking supported pattern matches of $REG_PASS` — Jenkins автоматически вычищает значение credential'а из любого вывода `sh`-шага, в который оно было передано через `withCredentials`.
+- **Kubernetes Secrets** — `miklat-secrets` (namespace `miklat-app`, секреты ПРИЛОЖЕНИЯ: пароль RDS, `ADMIN_API_KEY`, AWS-креды, SNS ARN, S3 bucket — созданы ещё в Задании 3, `Jenkinsfile-cd` их не читает и не выводит, они попадают в поды приложения напрямую через `secretKeyRef` в Helm-чарте) и `jenkins-admin-secret` (namespace `jenkins`, логин/пароль администратора Jenkins UI — создан императивно, никогда не существовал как файл на диске и не является Jenkins Credential).
+- **ServiceAccount token / kubeconfig** — `cd-agent` не использует и никогда не создавал отдельный файл kubeconfig: под работает под `ServiceAccount jenkins-cd`, токен которого `kubectl`/`helm` подхватывают автоматически через in-cluster config (стандартный механизм монтирования токена в `/var/run/secrets/kubernetes.io/serviceaccount/`) — нечего хранить и нечего утечь отдельным файлом.
+
+Ни в `Jenkinsfile-ci`/`Jenkinsfile-cd`, ни в `jenkins/values.yaml` не встречается ни одного секретного значения в открытом виде — только имена/ID credential'ов и Secret'ов.
+
+#### Jenkins UI/API не публикуется наружу
+
+Реально подтверждено (не просто заявлено) прямым сравнением заголовков и `<title>` через тот же публичный вход (`NodePort 30080`), которым пользуется GitHub webhook:
+
+```
+curl -sI http://localhost:30080/login   → HTTP 200, БЕЗ заголовка X-Jenkins
+curl -sI http://localhost:30080/manage  → HTTP 200, БЕЗ заголовка X-Jenkins
+curl -s   http://localhost:30080/login  | title → "ShelterNearYou · miklat-devops" (фронтенд приложения, не Jenkins)
+curl -sI http://localhost:30080/github-webhook/ → HTTP 405, X-Jenkins: 2.555.3
+```
+
+`/login` и `/manage` формально отвечают `200`, но это ответ SPA-фронтенда приложения (client-side routing отдаёт `index.html` на любой неизвестный путь) — оба Ingress-объекта (`jenkins-webhook-ingress` в `jenkins`, `miklat-ingress` в `miklat-app`) не задают `host`, поэтому nginx ingress controller сливает их правила в общий набор для одного и того же входа: путь `/github-webhook/` уходит в Jenkins, всё остальное — на `frontend`. Реально в Jenkins попадает (подтверждено заголовком `X-Jenkins`) только один путь. Единственный способ достучаться до настоящего Jenkins UI — `kubectl port-forward`, доступный лишь тому, у кого уже есть `kubectl`-доступ к кластеру (то есть уже прошедшему через RBAC/SSH-периметр сервера).
+
+#### NetworkPolicy (`jenkins/network-policy.yaml`)
+
+6 объектов `NetworkPolicy` на namespace `jenkins`, применены на кластере: `default-deny-all` (baseline — запрет всего ingress/egress по умолчанию для всех подов namespace), `allow-dns-egress` (все поды → CoreDNS в `kube-system`), `allow-controller-ingress` (к контроллеру — только из `ingress-nginx` на 8080, и от agent-подов на 50000/JNLP), `allow-controller-egress` (контроллер → k8s API-сервер на `6443` — нужно Kubernetes-плагину для управления agent-подами — и HTTPS-443 в интернет для Update Center), `allow-agent-egress-common` (любой agent-под → JNLP-туннель к контроллеру + HTTPS-443 в интернет — git/kaniko/npm/pip), `allow-cd-agent-egress` (только `cd-agent`, не `ci-agent` — доступ к k8s API-серверу и к namespace `miklat-app` на портах 8000/8080 для Smoke-test).
+
+Прикладной эффект правил при реальном enforcement: `ci-agent` не имел бы сетевого маршрута ни к k8s API-серверу, ни к namespace `miklat-app` — второй, независимый от RBAC слой того же ограничения, что уже доказано выше через `kubectl auth can-i`.
+
+**Важная оговорка, подтверждённая реально, а не предположенная:** k3s на `mbdai` работает на дефолтном CNI `flannel`, который **не enforce'ит** `NetworkPolicy` (тот же технический факт, что уже задокументирован в Задании 3 для namespace `miklat-app`) — манифесты применились на кластер без единой ошибки и без единого побочного эффекта (webhook/прод/поды — все проверены до и после apply), но физически ни один из описанных выше запретов сейчас не блокируется. Единственный реально работающий механизм ограничения на этом кластере — RBAC. Манифесты — готовая, синтаксически и семантически корректная основа: начнут реально применяться без единой правки, если CNI когда-нибудь заменят на Calico/Canal.
+
+### Известные компромиссы (trade-offs)
+
+- **`k8s/` обёрнут в Helm-чарт (`helm/miklat-app/`) специально ради `Jenkinsfile-cd`** — исходное приложение (Задание 3) было развёрнуто плоскими `kubectl apply`-манифестами; буквальная формулировка задания требует `helm upgrade --install`, поэтому существующие ресурсы мигрированы под управление Helm (`migrate-to-helm.sh`, аннотации/лейблы, без даунтайма) — решение согласовано с пользователем явным вопросом.
+- **`Role miklat-cd-deployer` включает полный доступ к `secrets` в `miklat-app`** — не расширение прав, а неизбежное следствие того, что Helm 3 хранит историю релизов как собственные `Secret` в namespace деплоя (см. RBAC выше) — задокументированный, а не забытый компромисс.
+- **`NetworkPolicy` написан и применён, но не enforce'ится** текущим CNI (`flannel`) — та же техническая причина, что и в Задании 3, только там пункт был помечен планом как бонус и сознательно отложен, а здесь (формально не бонус) манифест всё равно реализован — как готовая, но пока не действующая основа.
+- **Classic PAT вместо fine-grained** для `ghcr-credentials` — на момент написания GitHub не поддерживает fine-grained-токены для push в GHCR-пакеты; scope сужен до `write:packages`, токен привязан к отдельному, не личному GitHub-аккаунту использования (тот же PAT, что и при ручной публикации образов в Задании 3).
+- **Jenkins UI/API полностью закрыт снаружи**, доступ только через `kubectl port-forward` — сознательное решение до конца проекта (не промежуточный шаг): на том же физическом сервере `mbdai` работает реальный прод `shelternearyou.online`, публиковать ещё один административный интерфейс наружу без явной необходимости — не оправданный риск.
