@@ -36,6 +36,13 @@ alertmanager:
       group_interval: 5m
       repeat_interval: 12h
       receiver: 'demo-webhook'
+      # ВАЖНО: явно перекрываем дефолтный вложенный route чарта
+      # (route.routes: [{receiver: 'null', matchers: [alertname = "Watchdog"]}]).
+      # route — это map, Helm мёрджит его с дефолтом по ключам; без этой строки
+      # оставшийся дефолтный routes[] ссылался бы на ресивер "null", которого
+      # у нас больше нет (мы полностью заменили список receivers) —
+      # это и вызывало ошибку "undefined receiver \"null\" used in route".
+      routes: []
     receivers:
       - name: 'demo-webhook'
         webhook_configs:
