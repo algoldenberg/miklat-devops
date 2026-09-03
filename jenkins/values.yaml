@@ -195,6 +195,37 @@ controller:
                 }
               }
           - script: |
+              // Задание 5, исправление реального бага: изолированная сборка+push
+              // ОДНОГО сервиса через kaniko, в СВОЁМ собственном поде (agent
+              // build-agent, agent.podRetention: Never). Вызывается из
+              // Jenkinsfile-ci по одному разу на каждый изменившийся сервис
+              // (build job: 'miklat-build', wait: true) вместо прежнего цикла
+              // /kaniko/executor в одном общем контейнере — тот подход
+              // "протекал" файловой системой между сборками разных сервисов
+              // (подробный разбор с реальными логами — в самом Jenkinsfile-build).
+              pipelineJob('miklat-build') {
+                description('Build: изолированная сборка и push ОДНОГО образа через kaniko в своём поде. Вызывается из miklat-ci. Управляется как код (Job DSL) — не редактировать через UI.')
+                parameters {
+                  choiceParam(
+                    'SERVICE_NAME',
+                    ['miklat-service', 'miklat-comments', 'miklat-routes', 'miklat-walking-routes', 'miklat-photos', 'miklat-gateway', 'frontend'],
+                    'Какой сервис собирать (значение из CHANGED_SERVICES в Jenkinsfile-ci)'
+                  )
+                  stringParam('GIT_SHA', '', 'Commit-SHA, который нужно собрать (тот же env.GIT_SHA, что и в miklat-ci)')
+                }
+                definition {
+                  cpsScm {
+                    scm {
+                      git {
+                        remote { url('https://github.com/algoldenberg/miklat-devops.git') }
+                        branch('main')
+                      }
+                    }
+                    scriptPath('Jenkinsfile-build')
+                  }
+                }
+              }
+          - script: |
               pipelineJob('miklat-cd') {
                 description('CD: деплой готового образа (по tag/digest) в namespace miklat-app. Управляется как код (Job DSL) — не редактировать через UI.')
                 parameters {
@@ -365,6 +396,29 @@ agent:
             resourceRequestMemory: "512Mi"
             resourceLimitCpu: "500m"
             resourceLimitMemory: "1Gi"
+    # Задание 5, исправление реального бага: контейнер kaniko здесь БЫЛ, но
+    # переехал в отдельный под-шаблон buildAgent ниже. Раньше Jenkinsfile-ci
+    # гонял ВСЕ 6 сборок kaniko последовательно в этом одном общем
+    # контейнере — kaniko не сбрасывает файловую систему между вызовами
+    # /kaniko/executor, из-за чего pip install одной сборки "протекал" в
+    # следующую (реально проверено: 5 из 6 запушенных образов оказались
+    # без своих Python-зависимостей — подробности в Jenkinsfile-build).
+    # Теперь ci-agent строит/лидирует только checkout+lint+test+detect, а
+    # каждая сборка образа идёт в СВОЁМ собственном поде job'ы miklat-build
+    # (agent.podRetention: Never ниже это гарантирует).
+    buildAgent: |
+      - name: build-agent
+        label: build-agent
+        containers:
+          - name: git
+            image: alpine/git:2.54.0
+            command: "cat"
+            args: ""
+            ttyEnabled: true
+            resourceRequestCpu: "100m"
+            resourceRequestMemory: "128Mi"
+            resourceLimitCpu: "250m"
+            resourceLimitMemory: "256Mi"
           - name: kaniko
             image: gcr.io/kaniko-project/executor:v1.23.2-debug
             command: "cat"

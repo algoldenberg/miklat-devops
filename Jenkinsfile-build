@@ -1,0 +1,130 @@
+// Jenkinsfile-build
+// Задание 5, фикс реального бага в CI: изолированная сборка+push ОДНОГО
+// сервиса через kaniko в СВОЁМ собственном поде.
+//
+// Почему это отдельная job, а не часть Jenkinsfile-ci: раньше все 6
+// kaniko-сборок при одном коммите шли ПОСЛЕДОВАТЕЛЬНО внутри ОДНОГО и
+// того же контейнера container('kaniko') агента ci-agent (цикл .each в
+// Jenkinsfile-ci). kaniko не Docker — он выполняет RUN-инструкции прямо
+// в файловой системе того контейнера, в котором сам работает, и не
+// сбрасывает её между вызовами /kaniko/executor. Базовый образ
+// (python:3.12-slim) при следующем вызове накладывается ПОВЕРХ уже
+// существующих файлов, ничего не удаляя — поэтому pip install первой
+// сборки в цикле (miklat-gateway) "утекал" во вторую (miklat-service):
+// pip видел fastapi/uvicorn/prometheus_* как "Requirement already
+// satisfied" и не переустанавливал их, а kaniko не фиксировал их как
+// новый слой ИМЕННО этого образа — в итоге реально запушенный
+// miklat-service:c0a2de5 (и следом miklat-comments/routes/
+// walking-routes/photos) физически не содержал этих пакетов. Проверено
+// напрямую: `pip freeze` внутри живого пода на miklat-service:c0a2de5 и
+// miklat-comments:c0a2de5 — почти/полностью пусто, при живом контейнере
+// падение было "exec: uvicorn: executable file not found in $PATH".
+// miklat-gateway (собирался первым, на чистом контейнере) оказался
+// единственным рабочим образом из шести.
+//
+// Здесь Kubernetes-плагин Jenkins выделяет СВОЙ под на КАЖДЫЙ запуск
+// этой job (agent.podRetention: Never в jenkins/values.yaml уже
+// гарантирует под именно на время одной сборки) — то есть один
+// SERVICE_NAME = один под = гарантированно чистый kaniko, без утечки
+// состояния между сервисами. Jenkinsfile-ci дальше вызывает эту job по
+// одному разу на каждый изменившийся сервис (build job: 'miklat-build',
+// wait: true) вместо прежнего цикла /kaniko/executor в общем контейнере.
+pipeline {
+    agent { label 'build-agent' }
+
+    options {
+        timeout(time: 15, unit: 'MINUTES')
+    }
+
+    environment {
+        REGISTRY = 'ghcr.io'
+        IMAGE_NS = 'algoldenberg'
+    }
+
+    stages {
+        stage('Validate parameters') {
+            steps {
+                container('git') {
+                    script {
+                        if (!params.SERVICE_NAME?.trim()) {
+                            error("SERVICE_NAME обязателен — какой сервис собирать.")
+                        }
+                        if (!params.GIT_SHA?.trim()) {
+                            error("GIT_SHA обязателен — конкретный commit, который нужно собрать (тот же, что и остальные образы этого коммита).")
+                        }
+                        // 'frontend' лежит в repo-корне в frontend/, у бэкенд-сервисов —
+                        // в services/<имя>/ (та же логика context/Dockerfile, что и в
+                        // прежнем цикле Jenkinsfile-ci).
+                        env.BUILD_CONTEXT = (params.SERVICE_NAME == 'frontend') ? 'frontend' : "services/${params.SERVICE_NAME}"
+                        echo "Собираю: сервис=${params.SERVICE_NAME} (context=${env.BUILD_CONTEXT}), commit=${params.GIT_SHA}"
+                    }
+                }
+            }
+        }
+
+        stage('Checkout exact commit') {
+            steps {
+                container('git') {
+                    // safe.directory — та же защита от CVE-2022-24765, что и в
+                    // Jenkinsfile-ci (Declarative Checkout SCM делает первый checkout
+                    // от другого UID до входа в container('git')).
+                    sh 'git config --global --add safe.directory "*"'
+                    checkout scm
+                    // Явный checkout ИМЕННО того коммита, что прислал Jenkinsfile-ci
+                    // (params.GIT_SHA) — а не просто "текущий HEAD ветки main на
+                    // момент старта этой job", который теоретически мог уже уйти
+                    // вперёд, если между триггером CI и стартом этой job кто-то
+                    // успел запушить ещё один коммит.
+                    sh "git checkout ${params.GIT_SHA}"
+                }
+            }
+        }
+
+        stage('Build & push (kaniko)') {
+            steps {
+                container('kaniko') {
+                    withCredentials([usernamePassword(credentialsId: 'ghcr-credentials', usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
+                        sh '''
+                            mkdir -p /kaniko/.docker
+                            AUTH=$(printf '%s:%s' "$REG_USER" "$REG_PASS" | base64 | tr -d '\\n')
+                            cat > /kaniko/.docker/config.json <<EOF
+{"auths":{"${REGISTRY}":{"auth":"${AUTH}"}}}
+EOF
+                        '''
+                        sh """
+                            echo '== kaniko: ${params.SERVICE_NAME} -> ${env.REGISTRY}/${env.IMAGE_NS}/${params.SERVICE_NAME}:${params.GIT_SHA} =='
+                            /kaniko/executor \\
+                              --context=\$(pwd)/${env.BUILD_CONTEXT} \\
+                              --dockerfile=\$(pwd)/${env.BUILD_CONTEXT}/Dockerfile \\
+                              --destination=${env.REGISTRY}/${env.IMAGE_NS}/${params.SERVICE_NAME}:${params.GIT_SHA} \\
+                              --digest-file=/workspace/digest.txt \\
+                              --cache=true
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Publish metadata') {
+            steps {
+                container('kaniko') {
+                    sh """
+                        echo 'service=${params.SERVICE_NAME}' > build-metadata.txt
+                        echo 'tag=${params.GIT_SHA}' >> build-metadata.txt
+                        echo -n 'digest=' >> build-metadata.txt
+                        cat /workspace/digest.txt >> build-metadata.txt
+                        echo >> build-metadata.txt
+                        cat build-metadata.txt
+                    """
+                }
+                archiveArtifacts artifacts: 'build-metadata.txt', allowEmptyArchive: true
+            }
+        }
+    }
+
+    post {
+        always {
+            echo "Build: сервис=${params.SERVICE_NAME ?: '?'} тег=${params.GIT_SHA ?: '?'} завершён со статусом ${currentBuild.currentResult}"
+        }
+    }
+}

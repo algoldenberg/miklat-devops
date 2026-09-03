@@ -5,7 +5,8 @@
 //
 // Логические части: checkout → validate (структура + Dockerfile lint) →
 // lint → тесты (минимальный набор) → определение изменившихся сервисов →
-// build&push через kaniko → publish metadata.
+// изолированная сборка+push каждого образа (downstream job miklat-build,
+// свой под на сервис — см. Jenkinsfile-build) → триггер деплоя (miklat-cd).
 //
 // Осознанное сужение: полный `pytest tests/` для бэкенд-сервисов требует
 // живой Postgres+PostGIS с сид-данными — этого в CI-агенте нет и не
@@ -27,8 +28,10 @@ pipeline {
     }
 
     environment {
-        REGISTRY = 'ghcr.io'
-        IMAGE_NS = 'algoldenberg'
+        // REGISTRY/IMAGE_NS переехали в Jenkinsfile-build — сборка и push
+        // образов теперь целиком в изолированной job miklat-build (см.
+        // стадию 'Build & push (isolated per-service jobs)' ниже), здесь
+        // они больше не нужны.
     }
 
     stages {
@@ -164,104 +167,82 @@ pipeline {
             }
         }
 
-        stage('Build & push (kaniko)') {
+        stage('Build & push (isolated per-service jobs)') {
+            // Задание 5, исправление реального бага: раньше здесь был цикл
+            // /kaniko/executor ВНУТРИ ОДНОГО общего container('kaniko') —
+            // kaniko не сбрасывает файловую систему между вызовами, и
+            // pip install одной сборки "протекал" в следующую (см. полный
+            // разбор с реальными логами в Jenkinsfile-build). Теперь для
+            // каждого изменившегося сервиса запускается ОТДЕЛЬНАЯ job
+            // miklat-build — Kubernetes-плагин Jenkins выделяет ей свой
+            // собственный под (agent.podRetention: Never в
+            // jenkins/values.yaml), то есть каждая сборка гарантированно
+            // идёт в чистом, свежем kaniko-контейнере.
+            //
+            // wait: true (в отличие от Trigger CD ниже) — здесь это
+            // осознанно: если хотя бы одна сборка образа реально
+            // провалилась, весь CI должен упасть сразу и явно, а не
+            // молча запушить сломанный образ и запустить его деплой (это
+            // и была фактическая причина инцидента 03.09.2026 — сборки
+            // "успешно" завершались, но давали пустые образы).
             when {
                 expression { return env.CHANGED_SERVICES?.trim() }
             }
             steps {
-                container('kaniko') {
-                    withCredentials([usernamePassword(credentialsId: 'ghcr-credentials', usernameVariable: 'REG_USER', passwordVariable: 'REG_PASS')]) {
-                        sh '''
-                            mkdir -p /kaniko/.docker
-                            AUTH=$(printf '%s:%s' "$REG_USER" "$REG_PASS" | base64 | tr -d '\\n')
-                            cat > /kaniko/.docker/config.json <<EOF
-{"auths":{"${REGISTRY}":{"auth":"${AUTH}"}}}
-EOF
-                        '''
-                        script {
-                            env.CHANGED_SERVICES.split(',').each { svc ->
-                                def context = (svc == 'frontend') ? 'frontend' : "services/${svc}"
-                                def image = "${env.REGISTRY}/${env.IMAGE_NS}/${svc}:${env.GIT_SHA}"
-                                def digestFile = "/workspace/digest-${svc}.txt"
-                                sh """
-                                    echo '== kaniko: ${svc} -> ${image} =='
-                                    /kaniko/executor \\
-                                      --context=\$(pwd)/${context} \\
-                                      --dockerfile=\$(pwd)/${context}/Dockerfile \\
-                                      --destination=${image} \\
-                                      --digest-file=${digestFile} \\
-                                      --cache=true
-                                """
-                            }
+                container('git') {
+                    script {
+                        env.CHANGED_SERVICES.split(',').each { svc ->
+                            echo "Запускаю miklat-build: SERVICE_NAME=${svc} GIT_SHA=${env.GIT_SHA}"
+                            build job: 'miklat-build',
+                                  parameters: [
+                                      string(name: 'SERVICE_NAME', value: svc),
+                                      string(name: 'GIT_SHA', value: env.GIT_SHA)
+                                  ],
+                                  wait: true
                         }
                     }
                 }
             }
         }
 
-        stage('Publish metadata') {
-            when {
-                expression { return env.CHANGED_SERVICES?.trim() }
-            }
-            steps {
-                container('kaniko') {
-                    sh '''
-                        echo "commit=${GIT_SHA}" > build-metadata.txt
-                        for f in /workspace/digest-*.txt; do
-                            [ -f "$f" ] || continue
-                            svc=$(basename "$f" | sed 's/digest-//; s/.txt//')
-                            echo "${svc}: ${REGISTRY}/${IMAGE_NS}/${svc}:${GIT_SHA} @ $(cat $f)" >> build-metadata.txt
-                        done
-                        cat build-metadata.txt
-                    '''
-                }
-                archiveArtifacts artifacts: 'build-metadata.txt', allowEmptyArchive: true
-            }
-        }
-
         stage('Trigger CD') {
             // Фаза 4, шаг 6: автоматическая связка CI->CD. Для каждого
             // изменившегося сервиса запускаем downstream job miklat-cd с
-            // теми же тремя параметрами, которые он ожидает (см.
-            // Jenkinsfile-cd/jobDsl в jenkins/values.yaml): SERVICE_NAME
-            // (то же самое имя, что уже посчитано в CHANGED_SERVICES —
-            // ровно тот же список значений, что и choiceParam у miklat-cd),
-            // IMAGE_TAG (тот же GIT_SHA, которым kaniko только что
-            // реально тегировал и запушило образ) и IMAGE_DIGEST (для
-            // traceability в логах CD, не участвует в самом деплое).
+            // теми параметрами, которые он ожидает (см. Jenkinsfile-cd/
+            // jobDsl в jenkins/values.yaml): SERVICE_NAME (то же самое
+            // имя, что уже посчитано в CHANGED_SERVICES) и IMAGE_TAG (тот
+            // же GIT_SHA, которым только что реально собрала и запушила
+            // образ предыдущая стадия). IMAGE_DIGEST здесь больше не
+            // передаём: раньше digest читался из локального файла того
+            // же общего container('kaniko'), но теперь каждая сборка —
+            // отдельная job со своим подом, и её digest незачем тащить
+            // обратно в CI (Jenkinsfile-cd и раньше не использовал его
+            // для самого деплоя — только для необязательной строчки в
+            // логе; сам digest по-прежнему виден в консоли и
+            // build-metadata.txt соответствующего билда miklat-build).
             //
-            // Читаем digest-файл именно внутри container('kaniko') — то же
-            // самое место, откуда его уже читает стадия Publish metadata
-            // (те файлы физически лежат в файловой системе САМОГО
-            // контейнера kaniko, а не в общем workspace-volume, который у
-            // всех контейнеров пода смонтирован на /home/jenkins/agent —
-            // из другого контейнера их не увидеть).
-            //
-            // wait: false (без propagate — он влияет только на поведение
-            // ожидания результата, а без wait не используется) — CI и CD
-            // сознательно разделены (см. principle CI/CD separation в
-            // README): CI считает свою работу выполненной, как только
-            // образ собран, запушен и job деплоя поставлен в очередь;
-            // сам деплой, его rollout/verify/smoke-test и explicit
-            // rollback — целиком зона ответственности Jenkinsfile-cd,
-            // со своим отдельным Console Output. Не делаем CI пайплайн
-            // заложником длительности helm upgrade --wait/rollback CD
-            // (у miklat-cd свои собственные таймауты).
+            // wait: false — CI и CD сознательно разделены (см. principle
+            // CI/CD separation в README): CI считает свою работу
+            // выполненной, как только все образы собраны, запушены и
+            // job'ы деплоя поставлены в очередь; сам деплой, его
+            // rollout/verify/smoke-test и explicit rollback — целиком
+            // зона ответственности Jenkinsfile-cd, со своим отдельным
+            // Console Output. Не делаем CI пайплайн заложником
+            // длительности helm upgrade --wait/rollback CD (у miklat-cd
+            // свои собственные таймауты, и теперь ещё и
+            // disableConcurrentBuilds() — билды деплоя серилизуются сами).
             when {
                 expression { return env.CHANGED_SERVICES?.trim() }
             }
             steps {
-                container('kaniko') {
+                container('git') {
                     script {
                         env.CHANGED_SERVICES.split(',').each { svc ->
-                            def digestFile = "/workspace/digest-${svc}.txt"
-                            def digest = sh(script: "cat ${digestFile}", returnStdout: true).trim()
-                            echo "Запускаю miklat-cd: SERVICE_NAME=${svc} IMAGE_TAG=${env.GIT_SHA} IMAGE_DIGEST=${digest}"
+                            echo "Запускаю miklat-cd: SERVICE_NAME=${svc} IMAGE_TAG=${env.GIT_SHA}"
                             build job: 'miklat-cd',
                                   parameters: [
                                       string(name: 'SERVICE_NAME', value: svc),
-                                      string(name: 'IMAGE_TAG', value: env.GIT_SHA),
-                                      string(name: 'IMAGE_DIGEST', value: digest)
+                                      string(name: 'IMAGE_TAG', value: env.GIT_SHA)
                                   ],
                                   wait: false
                         }
