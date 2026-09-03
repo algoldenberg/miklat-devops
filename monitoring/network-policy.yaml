@@ -1,0 +1,435 @@
+# monitoring/network-policy.yaml
+# Фаза 5, Задание 5: NetworkPolicy для namespace `observability`.
+#
+# КОНТЕКСТ (важно, отличается от изначального плана): `miklat-work-plan.md`
+# (написан 31.08.2026, до начала Фазы 4) явно откладывал NetworkPolicy для
+# слоя мониторинга как "тот же осознанно отложенный бонус", предполагая, что
+# k3s поверх flannel не enforce'ит NetworkPolicy вообще. Это предположение
+# уже ОПРОВЕРГНУТО фактами в этом же проекте: `jenkins/network-policy.yaml`
+# (см. его шапку) — k3s поверх flannel по умолчанию включает СОБСТВЕННЫЙ
+# встроенный Network Policy controller, реально ловивший два независимых
+# инцидента блокировки трафика (JNLP-порт агентов, Фаза 4; scrape Prometheus
+# → Jenkins, Фаза 5). Раз enforcement реально работает — NetworkPolicy для
+# `observability` было решено делать не бонусом, а обязательным пунктом,
+# тем же способом (реальные факты с кластера, не угаданные labels/порты).
+#
+# Все значения ниже получены с живого кластера, не угаданы:
+# - Полный список реальных scrape-таргетов Prometheus и их точные
+#   IP:порт — `curl http://localhost:9090/api/v1/targets` (port-forward),
+#   сгруппировано по `scrapePool`.
+# - Labels/selectors подов и Service — `kubectl get svc -n observability -o
+#   wide` (колонка SELECTOR) и `kubectl get pods -n observability -o wide`.
+# - Реальный порт admission-webhook Prometheus Operator — `kubectl get
+#   validatingwebhookconfigurations kube-prometheus-stack-admission -o
+#   jsonpath='{.webhooks[*].clientConfig.service}'` (порт сервиса 443) +
+#   `kubectl get deployment kube-prometheus-stack-operator -o
+#   jsonpath='{...containers[*].ports}'` (реальный containerPort — 10250,
+#   тот же порт, что и метрики оператора; Service 443 маппится на него через
+#   именованный порт `https`).
+# - Реальные контейнерные порты Alertmanager — `kubectl get statefulset
+#   alertmanager-kube-prometheus-stack-alertmanager -o jsonpath='{...
+#   containers[*].ports}'`: сам Alertmanager — `9093` (`http-web`) и `9094`
+#   (`mesh-tcp`/`mesh-udp`, кластерный gossip — не используется, у нас
+#   один реплика, трафик не выходит за пределы пода); sidecar
+#   config-reloader — `8080` (`reloader-web`), тоже реально скрейпится
+#   отдельным target'ом.
+# - IP k8s API-сервера (`83.229.70.64:6443`) — тот же факт, что уже
+#   использован в `jenkins/network-policy.yaml` (единый source of truth,
+#   не переоткрывался заново).
+# - В `miklat-app` NetworkPolicy нет вообще (`kubectl get networkpolicy -n
+#   miklat-app` → `No resources found`) — значит текущий scrape 6 backend-
+#   сервисов оттуда ничем не защищён и правки этого файла на него не влияют.
+#
+# ВАЖНАЯ ОГОВОРКА (не гипотеза, а задокументированное ограничение):
+# `kube-prometheus-stack-prometheus-node-exporter` — DaemonSet-под с
+# `hostNetwork: true` (подтверждено `kubectl get pods -n observability -o
+# wide`: его IP — это публичный IP самой ноды `83.229.70.64`, а не
+# pod-сеть `10.42.0.0/16`). У большинства реализаций NetworkPolicy
+# (включая, по всей вероятности, k3s built-in controller) политики вообще
+# не применяются к hostNetwork-подам — ни на вход, ни на выход, так как их
+# трафик не проходит через управляемый CNI veth-интерфейс. Поэтому ниже
+# НЕТ отдельного объекта, "защищающего" node-exporter как получателя —
+# такой объект создал бы ложное ощущение защиты. Исходящее правило
+# `allow-prometheus-egress` ниже (к порту 9100 на IP ноды) написано и
+# работает НЕЗАВИСИМО от этого — оно ограничивает исходящий трафик пода
+# Prometheus (обычного, не hostNetwork), а не входящий трафик
+# node-exporter'а.
+#
+# Как и в `jenkins/network-policy.yaml`: `kubectl port-forward` (единственный
+# способ доступа человека к Grafana/Prometheus/Alertmanager UI, т.к. в
+# namespace нет Ingress) идёт напрямую в netns пода через kubelet/API-сервер
+# и не проходит через CNI — NetworkPolicy на него не распространяется,
+# отдельно не описываем.
+---
+# 1. Baseline: полный запрет ingress+egress для всех подов namespace
+#    observability по умолчанию (тот же принцип, что и в jenkins/
+#    network-policy.yaml, policy 1) — оговорка про hostNetwork/node-exporter
+#    выше объясняет, почему этот запрет не покрывает его.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: observability
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 2. DNS нужен всем подам namespace (резолвинг ClusterIP-сервисов и, для
+#    Alertmanager, внешнего webhook-домена).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-egress
+  namespace: observability
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+---
+# 3. Egress пода Prometheus (label app.kubernetes.io/name=prometheus) — все
+#    реальные scrape-таргеты + собственный k8s API-доступ (Prometheus сам
+#    делает kubernetes_sd_config через API-сервер для service discovery,
+#    независимо от Operator — то же RBAC, что уже подтверждено отдельно,
+#    ClusterRole kube-prometheus-stack-prometheus).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-egress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  policyTypes:
+    - Egress
+  egress:
+    # Alertmanager (тот же namespace): отправка алертов (9093) + scrape
+    # обоих его реальных портов метрик (9093 сам, 8080 reloader).
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: alertmanager
+      ports:
+        - protocol: TCP
+          port: 9093
+        - protocol: TCP
+          port: 8080
+    # kube-state-metrics (тот же namespace): scrape 8080.
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kube-state-metrics
+      ports:
+        - protocol: TCP
+          port: 8080
+    # Prometheus Operator (тот же namespace): scrape метрик, порт 10250
+    # (тот же порт, на котором Operator также принимает admission webhook
+    # от k8s API-сервера — см. policy 11/12 ниже).
+    - to:
+        - podSelector:
+            matchLabels:
+              app: kube-prometheus-stack-operator
+      ports:
+        - protocol: TCP
+          port: 10250
+    # k8s API-сервер: job `apiserver` (scrape метрик) + собственный SD
+    # Prometheus (kubernetes_sd_config), порт 6443 — тот же IP, что уже
+    # используется в jenkins/network-policy.yaml.
+    - to:
+        - ipBlock:
+            cidr: 83.229.70.64/32
+      ports:
+        - protocol: TCP
+          port: 6443
+    # kubelet на ноде (job `kubelet`, включая /metrics/cadvisor и
+    # /metrics/probes) — тот же публичный IP ноды, порт 10250.
+    - to:
+        - ipBlock:
+            cidr: 83.229.70.64/32
+      ports:
+        - protocol: TCP
+          port: 10250
+    # node-exporter (job `prometheus-node-exporter`) — hostNetwork-под,
+    # адресуется тем же публичным IP ноды, порт 9100 (см. оговорку про
+    # hostNetwork в шапке файла — это правило про egress самого Prometheus,
+    # оно действует независимо от того, что ingress к node-exporter'у
+    # NetworkPolicy не покрывает).
+    - to:
+        - ipBlock:
+            cidr: 83.229.70.64/32
+      ports:
+        - protocol: TCP
+          port: 9100
+    # CoreDNS metrics (job `coredns`) — namespace kube-system, порт 9153.
+    # Отдельно от allow-dns-egress (там порт 53, здесь порт метрик).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: TCP
+          port: 9153
+    # Jenkins controller (namespace jenkins) — job `jenkins`, порт 8080
+    # (плагин prometheus, Фаза 5). Labels контроллера — те же самые,
+    # реально подтверждённые в jenkins/network-policy.yaml (policy 3), не
+    # угаданы заново.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: jenkins
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: jenkins-controller
+              app.kubernetes.io/instance: jenkins
+      ports:
+        - protocol: TCP
+          port: 8080
+    # 6 backend-сервисов приложения (namespace miklat-app) — все ServiceMonitor
+    # используют порт 8000. В miklat-app нет собственной NetworkPolicy
+    # (подтверждено `kubectl get networkpolicy -n miklat-app` → пусто),
+    # поэтому здесь ограничиваем только исходящую сторону Prometheus.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: miklat-app
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# 4. Ingress пода Prometheus — только Grafana (datasource-запросы PromQL).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-prometheus-ingress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: prometheus
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: grafana
+      ports:
+        - protocol: TCP
+          port: 9090
+---
+# 5. Ingress Alertmanager — только от Prometheus, оба реальных порта
+#    (9093 — сам Alertmanager, приём алертов + scrape; 8080 — sidecar
+#    config-reloader, отдельный scrape-target).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alertmanager-ingress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9093
+        - protocol: TCP
+          port: 8080
+---
+# 6. Egress Alertmanager — только исходящий HTTPS в интернет, к
+#    demo-webhook receiver'у (https://httpbin.org/post, Фаза 5 шаг 1).
+#    DNS уже разрешён общим правилом allow-dns-egress выше.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-alertmanager-egress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: alertmanager
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+      ports:
+        - protocol: TCP
+          port: 443
+---
+# 7. Ingress Grafana — только от Prometheus (scrape собственных метрик
+#    Grafana на порту 3000).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-grafana-ingress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 3000
+---
+# 8. Egress Grafana — к Prometheus (datasource-запросы, тот же namespace)
+#    и к k8s API-серверу (sidecar-провижининг dashboard/datasource читает
+#    ConfigMap'ы кластерно — то же самое ClusterRole
+#    kube-prometheus-stack-grafana-clusterrole, уже подтверждённое
+#    read-only на configmaps/secrets).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-grafana-egress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: grafana
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090
+    - to:
+        - ipBlock:
+            cidr: 83.229.70.64/32
+      ports:
+        - protocol: TCP
+          port: 6443
+---
+# 9. Ingress kube-state-metrics — только от Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kube-state-metrics-ingress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080
+---
+# 10. Egress kube-state-metrics — только к k8s API-серверу (list/watch
+#     кластерных ресурсов — то же ClusterRole, уже подтверждённое как
+#     read-only, без единого create/update/delete).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-kube-state-metrics-egress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: kube-state-metrics
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 83.229.70.64/32
+      ports:
+        - protocol: TCP
+          port: 6443
+---
+# 11. Ingress Prometheus Operator — ДВА независимых источника на ОДИН и
+#     тот же реальный порт 10250 (подтверждено: Service 443 маппится на
+#     containerPort 10250 через именованный порт `https`):
+#     а) Prometheus (тот же namespace) — scrape метрик оператора.
+#     б) k8s API-сервер — admission webhook
+#        (ValidatingWebhookConfiguration kube-prometheus-stack-admission,
+#        пути /admission-prometheusrules/validate и
+#        /admission-alertmanagerconfigs/validate, порт сервиса 443 →
+#        тот же containerPort 10250). Без этого правила следующее
+#        применение/изменение PrometheusRule или AlertmanagerConfig CRD
+#        начнёт падать на валидации — тот же класс риска, что уже был
+#        поймай на Jenkins JNLP-порту в Фазе 4.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-operator-ingress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app: kube-prometheus-stack-operator
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 10250
+    - from:
+        - ipBlock:
+            cidr: 83.229.70.64/32
+      ports:
+        - protocol: TCP
+          port: 10250
+---
+# 12. Egress Prometheus Operator — к k8s API-серверу (управление CRD
+#     статусами monitoring.coreos.com, StatefulSet'ами Prometheus/
+#     Alertmanager, их Secret/ConfigMap и operated-Service — то же самое
+#     широкое, но не cluster-admin, ClusterRole kube-prometheus-stack-
+#     operator, уже подтверждённое построчно).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-operator-egress
+  namespace: observability
+spec:
+  podSelector:
+    matchLabels:
+      app: kube-prometheus-stack-operator
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - ipBlock:
+            cidr: 83.229.70.64/32
+      ports:
+        - protocol: TCP
+          port: 6443
