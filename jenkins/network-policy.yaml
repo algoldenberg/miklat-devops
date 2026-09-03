@@ -28,10 +28,27 @@
 # добавлением порта 8080 туда же, где уже был разрешён 50000, в policy 3 и 5
 # ниже (остальная логика файла не менялась).
 #
+# ИСПРАВЛЕНО 03.09.2026 (Фаза 5, Задание 5, тот же класс бага — сетевая
+# политика блокирует легитимный трафик нового потребителя, о котором policy
+# 3 не знала на момент написания): после установки плагина `prometheus` в
+# Jenkins (jenkins/values.yaml) и включения `controller.prometheus.enabled`
+# реальный scrape от Prometheus (namespace `observability`,
+# ServiceMonitor `jenkins`) падал с `connect: connection refused` — при
+# этом `kubectl port-forward` на тот же под:порт работал нормально. Разница
+# объясняется тем же принципом, что уже описан ниже в policy 3 про
+# port-forward: он идёт напрямую в netns пода через kubelet/API-сервер, а
+# не через обычный pod-to-pod путь по CNI, поэтому NetworkPolicy на него не
+# распространяется — а вот реальный Prometheus-трафик идёт как раз через
+# CNI и попадает под `default-deny-all`, так как namespace `observability`
+# нигде не был явно разрешён в policy 3. Исправлено добавлением в policy 3
+# нового источника — namespace `observability` (автолейбл
+# `kubernetes.io/metadata.name=observability`, подтверждено `kubectl get
+# namespace observability --show-labels`), порт 8080, по тому же паттерну,
+# что уже используется для `ingress-nginx`.
+#
 # Все значения (labels, IP API-сервера, порты Service) — реальные, получены
 # командами на живом кластере (kubectl get pod/svc/endpoints/namespace
 # --show-labels), не угаданы.
-
 ---
 # 1. Baseline: полный запрет ingress+egress для ВСЕХ подов namespace jenkins
 # по умолчанию. Правила разных NetworkPolicy, выбирающих один и тот же под,
@@ -47,7 +64,6 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-
 ---
 # 2. DNS нужен всем подам namespace (контроллеру и обоим типам агентов) —
 # без него не резолвятся ни ClusterIP-сервисы (jenkins-agent, сервисы
@@ -75,12 +91,11 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
-
 ---
 # 3. Ingress к Jenkins-контроллеру (под jenkins-0, реальные labels чарта —
 # app.kubernetes.io/component=jenkins-controller,
 # app.kubernetes.io/instance=jenkins — подтверждено kubectl get pod
-# jenkins-0 --show-labels) — только из двух источников:
+# jenkins-0 --show-labels) — из трёх источников:
 #   а) namespace ingress-nginx, порт 8080 — единственный внешний путь,
 #      которым в контроллер попадает трафик (/github-webhook/ через
 #      публичный Ingress, реально подтверждено в этом же шаге 7 —
@@ -97,6 +112,14 @@ spec:
 #      Изначально здесь был разрешён только 50000 — из-за отсутствия 8080
 #      агент не мог пройти даже первый шаг подключения (см. правку в шапке
 #      файла от 02.09.2026).
+#   в) namespace observability, порт 8080 — Prometheus (kube-prometheus-
+#      stack) реально скрейпит эндпоинт плагина `prometheus`
+#      (`/prometheus`, Фаза 5, Задание 5) напрямую по pod IP через
+#      ServiceMonitor. Без этого правила scrape падал с `connection
+#      refused`, хотя `kubectl port-forward` на тот же адрес отрабатывал
+#      нормально — см. разбор в шапке файла (правка от 03.09.2026).
+#      Автолейбл namespace подтверждён `kubectl get namespace
+#      observability --show-labels`.
 #
 # Отдельно не описываем kubectl port-forward (единственный способ доступа
 # человека к Jenkins UI, см. шаги 1/4) — это не обычный pod-to-pod трафик
@@ -132,7 +155,13 @@ spec:
           port: 8080
         - protocol: TCP
           port: 50000
-
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+      ports:
+        - protocol: TCP
+          port: 8080
 ---
 # 4. Egress контроллера: к k8s API-серверу (Kubernetes-плагин сам
 # создаёт/удаляет agent-поды через API — без этого доступа агенты вообще не
@@ -174,7 +203,6 @@ spec:
       ports:
         - protocol: TCP
           port: 443
-
 ---
 # 5. Egress ЛЮБОГО agent-пода (и ci-agent, и cd-agent — общий label
 # jenkins/jenkins-jenkins-agent=true) обратно к контроллеру — порты 8080 И
@@ -217,7 +245,6 @@ spec:
       ports:
         - protocol: TCP
           port: 443
-
 ---
 # 6. Egress ТОЛЬКО cd-agent (label jenkins/label=cd-agent — специфичный
 # label конкретного pod template'а, отдельный от общего
