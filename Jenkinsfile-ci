@@ -27,12 +27,14 @@ pipeline {
         timeout(time: 30, unit: 'MINUTES')
     }
 
-    environment {
-        // REGISTRY/IMAGE_NS переехали в Jenkinsfile-build — сборка и push
-        // образов теперь целиком в изолированной job miklat-build (см.
-        // стадию 'Build & push (isolated per-service jobs)' ниже), здесь
-        // они больше не нужны.
-    }
+    // REGISTRY/IMAGE_NS (раньше был отдельный блок environment{} только с
+    // ними) переехали в Jenkinsfile-build — сборка и push образов теперь
+    // целиком в изолированной job miklat-build (см. стадию 'Build & push
+    // (isolated per-service jobs)' ниже), здесь они больше не нужны.
+    // Пустой environment{} — реальная синтаксическая ошибка Groovy
+    // ("No variables specified for environment"), проверено на реальном
+    // провале miklat-ci #22 — поэтому блок убран целиком, а не оставлен
+    // пустым.
 
     stages {
         stage('Checkout') {
