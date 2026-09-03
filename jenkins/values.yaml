@@ -41,9 +41,20 @@ controller:
   # обычным защищённым URL и отвечает 403 с редиректом на /login вместо того,
   # чтобы принять anonymous POST от GitHub. Тот же плагин даёт Job DSL-метод
   # `githubPush()` для триггера сборки по push (нужен на шаге 4.3).
+  # Фаза 5, Задание 5 (реальный баг, найден на этом шаге — см. подробный
+  # разбор в комментарии у `prometheus:` ниже): плагин `prometheus` тоже
+  # НЕ входит в дефолтный набор чарта и НЕ добавляется автоматически даже
+  # при `controller.prometheus.enabled: true` — несмотря на то, что
+  # комментарий в values.yaml самого чарта утверждает обратное. Добавляем
+  # его сюда руками, тем же способом, что и `job-dsl`/`github` выше.
+  # Версия проверена напрямую по https://plugins.jenkins.io/prometheus/ и
+  # https://updates.jenkins.io/download/plugins/prometheus/ (не угадана):
+  # 860.v532442b_44e9a_, дата релиза 13.08.2026 — актуальная на момент
+  # применения (03.09.2026).
   additionalPlugins:
     - "job-dsl:3732.v9a_c49a_61a_313"
     - "github:1.47.0"
+    - "prometheus:860.v532442b_44e9a_"
 
   # Фаза 4, шаг 4.1: GHCR-credentials для CI как код. Реальный токен нигде
   # в этом файле/репозитории не встречается — секрет `jenkins-ghcr-credentials`
@@ -87,17 +98,38 @@ controller:
 
   # Фаза 5, Задание 5: метрики самого Jenkins для Prometheus (дашборд
   # "Jenkins & Delivery", алерт JenkinsQueueStuck). Штатная встроенная
-  # интеграция чарта jenkinsci/jenkins — реально проверена по values.yaml
+  # интеграция чарта jenkinsci/jenkins — секция подтверждена по values.yaml
   # ИМЕННО закреплённой версии 5.9.29 (`helm show values jenkins/jenkins
-  # --version 5.9.29`, не по main-ветке репозитория), а не угадана: при
-  # controller.prometheus.enabled=true чарт сам (а) добавляет плагин
-  # `prometheus` (https://plugins.jenkins.io/prometheus/) в установку — не
-  # нужно вручную дублировать его в additionalPlugins выше, и (б) создаёт
-  # ServiceMonitor CRD-ресурс сам, без ручного манифеста. Эндпоинт плагина
-  # `/prometheus` реализован как UnprotectedRootAction (проверено по
-  # исходнику org.jenkinsci.plugins.prometheus.rest.PrometheusAction) — то
-  # есть глобальная авторизация Jenkins его не блокирует, точно так же как
-  # `/github-webhook/` в Фазе 4, шаг 4.2.
+  # --version 5.9.29`, не по main-ветке репозитория).
+  #
+  # ИСПРАВЛЕНИЕ (реальный баг чарта, найден на этом шаге, 03.09.2026):
+  # комментарий в values.yaml самого чарта утверждает, что при
+  # controller.prometheus.enabled=true чарт сам добавляет плагин
+  # `prometheus` в установку — это ОПРОВЕРГНУТО практикой для версии
+  # 5.9.29: полный лог `kubectl logs jenkins-0 -c init` (реальная установка
+  # плагинов) НЕ содержал ни одной строки про prometheus, а последующий
+  # `helm template ... > /tmp/jenkins-rendered.yaml` для контроля показал,
+  # что рендерённый `plugins.txt` включает только чартовые дефолты плюс
+  # НАШИ `job-dsl`/`github` — `prometheus` в списке нет. Что controller.
+  # prometheus.enabled=true делает реально подтверждено (тем же
+  # `helm template`): создаёт ServiceMonitor и проставляет ему
+  # `path: /prometheus`. Поэтому плагин добавлен руками в
+  # additionalPlugins выше — как и `job-dsl`/`github`.
+  #
+  # ПРОВЕРИТЬ ПОСЛЕ ПРИМЕНЕНИЯ (пока не подтверждено, не принимать на
+  # веру): предполагалось, что эндпоинт `/prometheus` — UnprotectedRootAction
+  # (по исходнику org.jenkinsci.plugins.prometheus.rest.PrometheusAction),
+  # то есть глобальная авторизация Jenkins его не блокирует, как и
+  # `/github-webhook/` в Фазе 4, шаг 4.2. Но реальный запрос к
+  # `/prometheus` ДО установки плагина вернул 403 + редирект на /login —
+  # это могло быть просто из-за отсутствующего плагина (несуществующий путь
+  # под защитой по умолчанию), а не опровержением UnprotectedRootAction.
+  # Нужно перепроверить `curl` того же эндпоинта ПОСЛЕ того как плагин
+  # реально установится — если 403 останется, потребуется отдельная мера
+  # (например явный bearer-token/basic-auth на ServiceMonitor или
+  # `useAuthenticatedEndpoint: false` через JCasC), а не считать вопрос
+  # закрытым по одной лишь спецификации кода.
+  #
   # serviceMonitorNamespace намеренно не задаём (дефолт — namespace самого
   # релиза, `jenkins`): наш Prometheus (monitoring/values-kube-prometheus-
   # stack.yaml, Фаза 5 шаг 1) уже настроен с serviceMonitorSelectorNilUses
