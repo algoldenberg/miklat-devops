@@ -1,0 +1,185 @@
+# monitoring/values-kube-prometheus-stack.yaml
+#
+# Кастомные values для чарта kube-prometheus-stack (prometheus-community),
+# версия чарта закреплена: 88.6.3 (appVersion v0.93.1) — см. `helm search repo`.
+# Все ключи ниже проверены по реальному values.yaml этой версии чарта
+# (и по values.yaml вложенных сабчартов grafana 12.11.2, kube-state-metrics 8.4.1,
+# prometheus-node-exporter 4.56.3), а не угаданы.
+#
+# Namespace: observability (создаётся отдельно перед helm install)
+
+# --------------------------------------------------------------------------
+# Отключаем дефолтные "kitchen sink" алерты и дашборды чарта — у нас по заданию
+# должен быть свой набор алертов (PrometheusRule) и 3 своих дашборда Grafana,
+# а не generic-дефолты чарта.
+# --------------------------------------------------------------------------
+defaultRules:
+  create: false
+
+# --------------------------------------------------------------------------
+# Alertmanager
+# --------------------------------------------------------------------------
+alertmanager:
+  enabled: true
+
+  # Безопасный demo-получатель алертов: публичный echo-сервис httpbin.org.
+  # Просто принимает вебхук и логирует тело запроса — ничего реального
+  # (Slack/PagerDuty) не трогаем. ПОДТВЕРДИ, что это ок, прежде чем ставить —
+  # если хочешь другой безопасный receiver (например, свой telegram-бот),
+  # скажи и поменяем.
+  config:
+    global:
+      resolve_timeout: 5m
+    route:
+      group_by: ['namespace', 'alertname']
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      receiver: 'demo-webhook'
+    receivers:
+      - name: 'demo-webhook'
+        webhook_configs:
+          - url: 'https://httpbin.org/post'
+            send_resolved: true
+
+  alertmanagerSpec:
+    # Без персистентного хранилища — Alertmanager эфемерный (ephemeral),
+    # состояние (silences/notification log) не критично для демо-стенда.
+    storage: {}
+    resources:
+      requests:
+        cpu: 10m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+
+# --------------------------------------------------------------------------
+# Prometheus
+# --------------------------------------------------------------------------
+prometheus:
+  prometheusSpec:
+    retention: 7d
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: local-path
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 5Gi
+
+    # По умолчанию чарт видит только ServiceMonitor/PodMonitor/PrometheusRule
+    # со своими release-лейблами (selectorNilUsesHelmValues: true).
+    # Нам на следующих шагах нужно будет скрейпить сервисы в namespace
+    # miklat-app и jenkins своими собственными ServiceMonitor/PodMonitor/
+    # PrometheusRule объектами — поэтому открываем discovery на все namespace's.
+    ruleSelectorNilUsesHelmValues: false
+    ruleNamespaceSelector: {}
+    serviceMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorNamespaceSelector: {}
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorNamespaceSelector: {}
+    probeSelectorNilUsesHelmValues: false
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 100Mi
+    limits:
+      memory: 200Mi
+
+# --------------------------------------------------------------------------
+# Grafana
+# --------------------------------------------------------------------------
+grafana:
+  enabled: true
+
+  # Пароль администратора — через отдельный Secret, создаваемый императивно
+  # на сервере (тот же паттерн, что jenkins-admin-secret в Фазе 4).
+  # Секрет НЕ хранится в git.
+  admin:
+    existingSecret: "grafana-admin-secret"
+    userKey: admin-user
+    passwordKey: admin-password
+
+  # Свои 3 дашборда по заданию вместо generic-дефолтов чарта.
+  defaultDashboardsEnabled: false
+
+  # Без персистентности: дашборды/датасорсы провижинятся как код (sidecar
+  # подхватывает ConfigMap'ы из git), поэтому потеря состояния Grafana
+  # при рестарте пода не критична.
+  persistence:
+    enabled: false
+
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+  # Сайдкар подхватывает дашборды/датасорсы из ConfigMap'ов с нужным лейблом
+  # в ЛЮБОМ namespace — понадобится для своих дашбордов на следующих шагах.
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      labelValue: "1"
+      searchNamespace: ALL
+    datasources:
+      enabled: true
+      defaultDatasourceEnabled: true
+
+# --------------------------------------------------------------------------
+# kube-state-metrics
+# --------------------------------------------------------------------------
+kubeStateMetrics:
+  enabled: true
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+
+# --------------------------------------------------------------------------
+# node-exporter (DaemonSet, у нас один узел — mbdai)
+# --------------------------------------------------------------------------
+nodeExporter:
+  enabled: true
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 30Mi
+    limits:
+      memory: 50Mi
+
+# --------------------------------------------------------------------------
+# k3s собирает controller-manager/scheduler/etcd/kube-proxy в один бинарник
+# и не выставляет их как отдельные Service в kube-system (проверено ранее:
+# `kubectl get pods -A` в kube-system показывает только coredns,
+# local-path-provisioner, metrics-server — отдельных подов для этих
+# компонентов нет). Дефолтные ServiceMonitor'ы чарта на них будут вечно
+# "DOWN" в Prometheus targets — отключаем мониторинг этих компонентов, чтобы
+# не было ложного шума.
+# --------------------------------------------------------------------------
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false
