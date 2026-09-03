@@ -85,6 +85,28 @@ controller:
   ingress:
     enabled: false
 
+  # Фаза 5, Задание 5: метрики самого Jenkins для Prometheus (дашборд
+  # "Jenkins & Delivery", алерт JenkinsQueueStuck). Штатная встроенная
+  # интеграция чарта jenkinsci/jenkins — реально проверена по values.yaml
+  # ИМЕННО закреплённой версии 5.9.29 (`helm show values jenkins/jenkins
+  # --version 5.9.29`, не по main-ветке репозитория), а не угадана: при
+  # controller.prometheus.enabled=true чарт сам (а) добавляет плагин
+  # `prometheus` (https://plugins.jenkins.io/prometheus/) в установку — не
+  # нужно вручную дублировать его в additionalPlugins выше, и (б) создаёт
+  # ServiceMonitor CRD-ресурс сам, без ручного манифеста. Эндпоинт плагина
+  # `/prometheus` реализован как UnprotectedRootAction (проверено по
+  # исходнику org.jenkinsci.plugins.prometheus.rest.PrometheusAction) — то
+  # есть глобальная авторизация Jenkins его не блокирует, точно так же как
+  # `/github-webhook/` в Фазе 4, шаг 4.2.
+  # serviceMonitorNamespace намеренно не задаём (дефолт — namespace самого
+  # релиза, `jenkins`): наш Prometheus (monitoring/values-kube-prometheus-
+  # stack.yaml, Фаза 5 шаг 1) уже настроен с serviceMonitorSelectorNilUses
+  # HelmValues=false — то есть discovery ServiceMonitor идёт по ВСЕМ
+  # namespace без ограничения, ровно как уже подтверждено на ServiceMonitor'ах
+  # miklat-app (они тоже не в namespace observability, но видны в Prometheus).
+  prometheus:
+    enabled: true
+
   # Явные пробы вместо чартовых дефолтов — требование плана (Задание 3 уже
   # приучило нас всегда задавать resources+probes явно, тот же принцип здесь).
   probes:
