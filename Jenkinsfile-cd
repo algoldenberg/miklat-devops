@@ -29,6 +29,22 @@ pipeline {
 
     options {
         timeout(time: 15, unit: 'MINUTES')
+        // Задание 5, исправление race condition: один коммит, меняющий
+        // несколько сервисов сразу, заставляет Jenkinsfile-ci запустить
+        // несколько параллельных билдов ЭТОГО ЖЕ job'а miklat-cd (по одному
+        // на сервис). Все они выполняют helm upgrade --install на ОДИН и
+        // тот же shared release "miklat-app" — Helm не поддерживает
+        // конкурентные операции над одним release (единый Secret-объект
+        // sh.helm.release.v1.miklat-app.vN как хранилище состояния), из-за
+        // чего 5 из 6 билдов падали с "release: already exists" /
+        // "another operation (install/upgrade/rollback) is in progress" /
+        // таймаутом --wait (реально воспроизведено и залогировано
+        // 03.09.2026, билды miklat-cd #6-11). disableConcurrentBuilds() —
+        // штатная опция ядра Jenkins Pipeline (workflow-job), без
+        // дополнительных плагинов: при параллельном триггере нескольких
+        // билдов miklat-cd они встают в очередь и выполняются строго по
+        // одному, вместо гонки за один и тот же Helm release.
+        disableConcurrentBuilds()
     }
 
     environment {
