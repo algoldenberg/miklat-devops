@@ -4,3 +4,7 @@ psycopg2-binary==2.9.9
 pydantic==2.9.2
 boto3==1.35.36
 python-multipart==0.0.12
+
+# Задание 5: /metrics + app_info + бизнес-метрики
+prometheus-fastapi-instrumentator==7.1.0
+prometheus-client==0.26.0

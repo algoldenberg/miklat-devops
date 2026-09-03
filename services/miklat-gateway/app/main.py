@@ -12,6 +12,7 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 
+from app import metrics
 from app.config import SERVICE_URLS, UPSTREAM_TIMEOUT_S
 from app.proxy import forward_request
 from app.routing import resolve_target
@@ -32,6 +33,10 @@ app = FastAPI(
     version="0.1.0",
     lifespan=lifespan,
 )
+
+# Задание 5: /metrics + app_info. Регистрируется здесь, ДО catch-all роута
+# proxy_all ниже — см. комментарий в app/metrics.py::instrument.
+metrics.instrument(app, app.version)
 
 
 @app.get("/health", tags=["meta"])

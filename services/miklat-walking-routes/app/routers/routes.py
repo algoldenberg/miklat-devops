@@ -1,6 +1,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from app import crud, osrm_client
+from app.metrics import WALKING_ROUTES_CALCULATED_TOTAL
 from app.schemas import RouteOut, RouteRequest
 
 router = APIRouter(tags=["walking-routes"])
@@ -11,6 +12,7 @@ def _route_response(coordinates: list[tuple[float, float]]) -> RouteOut:
         route = osrm_client.get_route(coordinates)
     except osrm_client.OSRMError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
+    WALKING_ROUTES_CALCULATED_TOTAL.inc()
     return RouteOut(distance_m=route["distance"], duration_s=route["duration"], geometry=route["geometry"])
 
 

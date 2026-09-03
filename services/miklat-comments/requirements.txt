@@ -2,3 +2,7 @@ fastapi==0.115.0
 uvicorn[standard]==0.30.6
 psycopg2-binary==2.9.9
 pydantic==2.9.2
+
+# Задание 5: /metrics + app_info + бизнес-метрики
+prometheus-fastapi-instrumentator==7.1.0
+prometheus-client==0.26.0

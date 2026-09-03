@@ -1,0 +1,116 @@
+# ServiceMonitor'ы для всех 6 инструментированных backend-сервисов
+# приложения miklat (Задание 5, п.1 — "ServiceMonitor или PodMonitor на
+# каждый сервис приложения"). Живут в том же namespace, что и Service'ы,
+# которые описывают (miklat-app) — по умолчанию (без namespaceSelector)
+# ServiceMonitor ищет Endpoints в СВОЁМ собственном namespace, поэтому
+# отдельный namespaceSelector не нужен.
+#
+# Prometheus (namespace observability) видит эти объекты благодаря
+# monitoring/values-kube-prometheus-stack.yaml, где
+# serviceMonitorSelectorNilUsesHelmValues: false и
+# serviceMonitorNamespaceSelector: {} — то есть Prometheus discovery
+# включён на ВСЕ namespace, а не только на тот, где установлен сам чарт.
+#
+# targetPort: 8000 — все 6 сервисов слушают на этом порту (см.
+# helm/miklat-app/templates/*.yaml, containerPort: 8000); используем номер
+# порта, а не имя, т.к. Service-манифесты сейчас не именуют свои порты —
+# trade-off, чтобы не трогать существующие Service-объекты лишний раз.
+#
+# path: /metrics — не публикуется через Ingress (см.
+# helm/miklat-app/templates/ingress.yaml — там путь `/` ведёт только на
+# frontend), то есть эндпоинт достижим только изнутри кластера.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: miklat-service
+  namespace: miklat-app
+  labels:
+    app.kubernetes.io/part-of: miklat
+spec:
+  selector:
+    matchLabels:
+      app: miklat-service
+  endpoints:
+    - targetPort: 8000
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: miklat-gateway
+  namespace: miklat-app
+  labels:
+    app.kubernetes.io/part-of: miklat
+spec:
+  selector:
+    matchLabels:
+      app: miklat-gateway
+  endpoints:
+    - targetPort: 8000
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: miklat-comments
+  namespace: miklat-app
+  labels:
+    app.kubernetes.io/part-of: miklat
+spec:
+  selector:
+    matchLabels:
+      app: miklat-comments
+  endpoints:
+    - targetPort: 8000
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: miklat-photos
+  namespace: miklat-app
+  labels:
+    app.kubernetes.io/part-of: miklat
+spec:
+  selector:
+    matchLabels:
+      app: miklat-photos
+  endpoints:
+    - targetPort: 8000
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: miklat-routes
+  namespace: miklat-app
+  labels:
+    app.kubernetes.io/part-of: miklat
+spec:
+  selector:
+    matchLabels:
+      app: miklat-routes
+  endpoints:
+    - targetPort: 8000
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: miklat-walking-routes
+  namespace: miklat-app
+  labels:
+    app.kubernetes.io/part-of: miklat
+spec:
+  selector:
+    matchLabels:
+      app: miklat-walking-routes
+  endpoints:
+    - targetPort: 8000
+      path: /metrics
+      interval: 15s

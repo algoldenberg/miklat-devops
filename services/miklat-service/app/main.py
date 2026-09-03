@@ -3,7 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from app import aws_client
+from app import aws_client, metrics
 from app.config import SNS_TOPIC_ARN
 from app.database import check_connection, close_pool, init_pool
 from app.routers import admin, miklats, reports, submissions
@@ -30,6 +30,12 @@ app.include_router(miklats.router)
 app.include_router(reports.router)
 app.include_router(submissions.router)
 app.include_router(admin.router)
+
+# Задание 5: /metrics + app_info. Вызвано ДО регистрации любых дальнейших
+# маршрутов ниже (их тут больше нет, но порядок важен в сервисах с
+# catch-all роутом — см. miklat-gateway) — сработает даже если такой роут
+# появится позже.
+metrics.instrument(app, app.version)
 
 
 @app.get("/health", response_model=HealthOut, tags=["meta"])

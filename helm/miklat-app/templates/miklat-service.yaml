@@ -32,6 +32,13 @@ spec:
           ports:
             - containerPort: 8000
           env:
+            # Задание 5: для app_info{version,git_sha,release} в /metrics.
+            # git_sha = тот же тег образа, которым CI (Jenkinsfile-ci) уже
+            # тегирует и деплоит этот сервис — не выдумываем новое значение.
+            - name: GIT_SHA
+              value: "{{ .Values.miklatService.imageTag }}"
+            - name: RELEASE_NAME
+              value: "{{ .Release.Name }}"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

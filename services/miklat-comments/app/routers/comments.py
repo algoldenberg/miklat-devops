@@ -4,6 +4,7 @@ from fastapi import APIRouter, Query
 
 from app import crud
 from app.config import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
+from app.metrics import COMMENTS_POSTED_TOTAL
 from app.schemas import CommentCreate, CommentOut, RatingSummaryOut
 
 router = APIRouter(prefix="/miklats/{miklat_id}", tags=["comments"])
@@ -20,7 +21,9 @@ def get_comments(
 
 @router.post("/comments", response_model=CommentOut, status_code=201)
 def post_comment(miklat_id: int, data: CommentCreate):
-    return crud.create_comment(miklat_id, data)
+    result = crud.create_comment(miklat_id, data)
+    COMMENTS_POSTED_TOTAL.inc()
+    return result
 
 
 @router.get("/rating-summary", response_model=RatingSummaryOut)

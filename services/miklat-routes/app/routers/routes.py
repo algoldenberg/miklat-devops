@@ -2,6 +2,7 @@ from fastapi import APIRouter, HTTPException
 
 from app import crud, osrm_client
 from app.config import MAX_WAYPOINTS
+from app.metrics import ROUTES_CALCULATED_TOTAL
 from app.schemas import MiklatRouteOut, MiklatRouteRequest, RouteOut, RouteRequest
 
 router = APIRouter(tags=["routes"])
@@ -13,6 +14,7 @@ def _build_route(coordinates: list[tuple[float, float]]) -> dict:
     except osrm_client.OSRMError as exc:
         raise HTTPException(status_code=exc.status_code, detail=exc.message) from exc
     legs = [{"distance_m": leg["distance"], "duration_s": leg["duration"]} for leg in route["legs"]]
+    ROUTES_CALCULATED_TOTAL.inc()
     return {
         "total_distance_m": route["distance"],
         "total_duration_s": route["duration"],

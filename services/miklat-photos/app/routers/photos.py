@@ -13,6 +13,7 @@ from app.config import (
     MAX_PHOTO_SIZE_BYTES,
     S3_BUCKET_NAME,
 )
+from app.metrics import PHOTOS_UPLOADED_TOTAL
 from app.schemas import PhotoOut
 
 router = APIRouter(prefix="/miklats/{miklat_id}", tags=["photos"])
@@ -67,6 +68,7 @@ async def upload_photo(miklat_id: int, request: Request, file: UploadFile = File
         extension=extension,
         uploaded_by_ip=uploaded_by_ip,
     )
+    PHOTOS_UPLOADED_TOTAL.inc()
     return _with_url(photo)
 
 

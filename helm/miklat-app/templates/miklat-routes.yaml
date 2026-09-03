@@ -32,6 +32,11 @@ spec:
           ports:
             - containerPort: 8000
           env:
+            # Задание 5: для app_info{version,git_sha,release} в /metrics.
+            - name: GIT_SHA
+              value: "{{ .Values.miklatRoutes.imageTag }}"
+            - name: RELEASE_NAME
+              value: "{{ .Release.Name }}"
             - name: DATABASE_URL
               valueFrom:
                 secretKeyRef:

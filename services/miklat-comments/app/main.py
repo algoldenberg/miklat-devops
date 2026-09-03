@@ -2,6 +2,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from app import metrics
 from app.database import check_connection, close_pool, init_pool
 from app.routers import admin, comments
 from app.schemas import HealthOut, ReadyOut
@@ -23,6 +24,8 @@ app = FastAPI(
 
 app.include_router(comments.router)
 app.include_router(admin.router)
+
+metrics.instrument(app, app.version)
 
 
 @app.get("/health", response_model=HealthOut, tags=["meta"])

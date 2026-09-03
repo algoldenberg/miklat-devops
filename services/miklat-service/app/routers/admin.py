@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from app import crud
 from app.auth import require_admin
 from app.config import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
+from app.metrics import SUBMISSIONS_APPROVED_TOTAL
 from app.schemas import (
     MiklatCreate,
     MiklatOut,
@@ -53,7 +54,13 @@ def list_submissions(
 
 @router.post("/submissions/{submission_id}/approve", response_model=SubmissionOut)
 def approve_submission(submission_id: int, body: SubmissionApprove = SubmissionApprove()):
-    return crud.approve_submission(submission_id, reviewed_by=body.reviewed_by or "admin")
+    result = crud.approve_submission(submission_id, reviewed_by=body.reviewed_by or "admin")
+    # Бизнес-метрика Задания 5 — инкремент только здесь, где заявка реально
+    # переходит в approved (crud.approve_submission бросает исключение, если
+    # заявка не найдена/уже обработана — до этой строки в таком случае не
+    # дойдёт).
+    SUBMISSIONS_APPROVED_TOTAL.inc()
+    return result
 
 
 @router.post("/submissions/{submission_id}/reject", response_model=SubmissionOut)
