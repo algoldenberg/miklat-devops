@@ -153,8 +153,24 @@ data:
           "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
           "targets": [
             {
-              "expr": "sum(rate({__name__=~\"miklat_(shelter_submissions_approved|comments_posted|photos_uploaded|routes_calculated|walking_routes_calculated)_total\"}[5m])) by (__name__)",
-              "legendFormat": "{{__name__}}"
+              "expr": "sum(rate(miklat_shelter_submissions_approved_total[5m]))",
+              "legendFormat": "Shelter submissions approved"
+            },
+            {
+              "expr": "sum(rate(miklat_comments_posted_total[5m]))",
+              "legendFormat": "Comments posted"
+            },
+            {
+              "expr": "sum(rate(miklat_photos_uploaded_total[5m]))",
+              "legendFormat": "Photos uploaded"
+            },
+            {
+              "expr": "sum(rate(miklat_routes_calculated_total[5m]))",
+              "legendFormat": "Routes calculated"
+            },
+            {
+              "expr": "sum(rate(miklat_walking_routes_calculated_total[5m]))",
+              "legendFormat": "Walking routes calculated"
             }
           ]
         },
