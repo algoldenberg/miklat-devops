@@ -56,7 +56,20 @@ pipeline {
                         // в services/<имя>/ (та же логика context/Dockerfile, что и в
                         // прежнем цикле Jenkinsfile-ci).
                         env.BUILD_CONTEXT = (params.SERVICE_NAME == 'frontend') ? 'frontend' : "services/${params.SERVICE_NAME}"
-                        echo "Собираю: сервис=${params.SERVICE_NAME} (context=${env.BUILD_CONTEXT}), commit=${params.GIT_SHA}"
+                        // Реальный инцидент 03.09.2026: пока сборки 6 сервисов шли в
+                        // ОДНОМ общем контейнере, registry-кэш kaniko (--cache=true)
+                        // успел закэшировать и запушить ИСПОРЧЕННЫЙ слой RUN pip install
+                        // (без fastapi/uvicorn/prometheus_*) для miklat-service/
+                        // comments/routes/walking-routes/photos на коммите c0a2de5.
+                        // После изоляции по подам эта проблема сама по себе не
+                        // повторится — но старые отравленные записи кэша для ЭТОГО
+                        // конкретного коммита остаются в реестре и будут переиспользованы
+                        // (подтверждено: пересборка miklat-service:c0a2de5 в изолированном
+                        // поде всё равно взяла битый cached layer). NO_CACHE — ручной
+                        // переключатель для одноразовой пересборки таких коммитов в
+                        // обход кэша; в норме (обычный CI-путь) не используется.
+                        env.KANIKO_CACHE_ARG = params.NO_CACHE ? '--cache=false' : '--cache=true'
+                        echo "Собираю: сервис=${params.SERVICE_NAME} (context=${env.BUILD_CONTEXT}), commit=${params.GIT_SHA}, ${env.KANIKO_CACHE_ARG}"
                     }
                 }
             }
@@ -98,7 +111,7 @@ EOF
                               --dockerfile=\$(pwd)/${env.BUILD_CONTEXT}/Dockerfile \\
                               --destination=${env.REGISTRY}/${env.IMAGE_NS}/${params.SERVICE_NAME}:${params.GIT_SHA} \\
                               --digest-file=/workspace/digest.txt \\
-                              --cache=true
+                              ${env.KANIKO_CACHE_ARG}
                         """
                     }
                 }
