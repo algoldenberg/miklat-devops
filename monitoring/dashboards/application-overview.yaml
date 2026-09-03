@@ -1,0 +1,210 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-application-overview
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+data:
+  application-overview.json: |
+    {
+      "uid": "miklat-application-overview",
+      "title": "Application Overview",
+      "tags": ["miklat", "application", "task5"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "job",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "query": "label_values(http_requests_total, job)",
+            "multi": true,
+            "includeAll": true,
+            "current": { "selected": true, "text": "All", "value": "$__all" },
+            "refresh": 2,
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Request rate by service (RPS)",
+          "description": "sum(rate(http_requests_total[5m])) by (job) — сколько запросов в секунду реально принимает каждый backend-сервис. Отвечает на вопрос: не упал ли трафик после релиза?",
+          "gridPos": { "x": 0, "y": 0, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{job=~\"$job\"}[5m])) by (job)",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Error rate (5xx) by service",
+          "description": "Доля ответов 5xx от общего трафика по сервису. Отвечает на вопрос: новый релиз навредил пользователям?",
+          "gridPos": { "x": 12, "y": 0, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 0.01 },
+                  { "color": "red", "value": 0.05 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "sum(rate(http_requests_total{job=~\"$job\",status=\"5xx\"}[5m])) by (job) / sum(rate(http_requests_total{job=~\"$job\"}[5m])) by (job)",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Availability (% non-5xx) by service",
+          "description": "1 - error rate, в процентах. Прямая иллюстрация SLI Availability (Фаза 5, п.5).",
+          "gridPos": { "x": 0, "y": 8, "w": 8, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "min": 0,
+              "max": 100,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "yellow", "value": 95 },
+                  { "color": "green", "value": 99 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "100 * (1 - (sum(rate(http_requests_total{job=~\"$job\",status=\"5xx\"}[5m])) by (job) / sum(rate(http_requests_total{job=~\"$job\"}[5m])) by (job)))",
+              "legendFormat": "{{job}}"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "timeseries",
+          "title": "Latency p50/p95/p99 by service (overall)",
+          "description": "histogram_quantile по http_request_duration_highr_seconds (без разбивки по хендлеру, много бакетов — точнее для общего SLI). Отвечает на вопрос: не деградировала ли отзывчивость сервиса в целом?",
+          "gridPos": { "x": 8, "y": 8, "w": 8, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.5, sum(rate(http_request_duration_highr_seconds_bucket{job=~\"$job\"}[5m])) by (le, job))",
+              "legendFormat": "{{job}} p50"
+            },
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_highr_seconds_bucket{job=~\"$job\"}[5m])) by (le, job))",
+              "legendFormat": "{{job}} p95"
+            },
+            {
+              "expr": "histogram_quantile(0.99, sum(rate(http_request_duration_highr_seconds_bucket{job=~\"$job\"}[5m])) by (le, job))",
+              "legendFormat": "{{job}} p99"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "p95 latency by endpoint (handler)",
+          "description": "histogram_quantile по http_request_duration_seconds (грубее — только 3 конечных бакета: 0.1/0.5/1.0s — но с разбивкой по хендлеру). Отвечает на вопрос: какой именно эндпоинт тормозит?",
+          "gridPos": { "x": 16, "y": 8, "w": 8, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "histogram_quantile(0.95, sum(rate(http_request_duration_seconds_bucket{job=~\"$job\"}[5m])) by (le, job, handler))",
+              "legendFormat": "{{job}} {{handler}}"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Business actions rate",
+          "description": "Реальные бизнес-действия приложения: одобренные заявки на укрытия, опубликованные комментарии, загруженные фото, построенные маршруты (обычные + пешие). Один из обязательных бизнес-метрик задания. Отвечает на вопрос: приложение реально используется людьми, а не просто отвечает на /health?",
+          "gridPos": { "x": 0, "y": 16, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "sum(rate({__name__=~\"miklat_(shelter_submissions_approved|comments_posted|photos_uploaded|routes_calculated|walking_routes_calculated)_total\"}[5m])) by (__name__)",
+              "legendFormat": "{{__name__}}"
+            }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "table",
+          "title": "Running version by service",
+          "description": "app_info{version,git_sha,release} — какая именно версия (commit SHA) сейчас реально отвечает на запросы каждого сервиса. Отвечает на вопрос: какой релиз задеплоен прямо сейчас?",
+          "gridPos": { "x": 12, "y": 16, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "targets": [
+            {
+              "expr": "app_info{job=~\"$job\"}",
+              "format": "table",
+              "instant": true
+            }
+          ],
+          "transformations": [
+            { "id": "organize", "options": { "excludeByName": { "Time": true, "Value": true } } }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "CPU usage by service",
+          "description": "container_cpu_usage_seconds_total (cAdvisor через kubelet) по подам namespace miklat-app. Отвечает на вопрос: проблема в приложении (медленный код) или в нехватке ресурсов?",
+          "gridPos": { "x": 0, "y": 24, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_usage_seconds_total{namespace=\"miklat-app\",container=~\"$job\"}[5m])) by (container)",
+              "legendFormat": "{{container}}"
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Memory usage (working set) by service",
+          "description": "container_memory_working_set_bytes (cAdvisor через kubelet) по подам namespace miklat-app.",
+          "gridPos": { "x": 12, "y": 24, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "sum(container_memory_working_set_bytes{namespace=\"miklat-app\",container=~\"$job\"}) by (container)",
+              "legendFormat": "{{container}}"
+            }
+          ]
+        }
+      ]
+    }
