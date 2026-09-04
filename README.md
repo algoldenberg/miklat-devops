@@ -1068,3 +1068,99 @@ curl -sI http://localhost:30080/github-webhook/ → HTTP 405, X-Jenkins: 2.555.3
 - **`NetworkPolicy` написан и применён, но не enforce'ится** текущим CNI (`flannel`) — та же техническая причина, что и в Задании 3, только там пункт был помечен планом как бонус и сознательно отложен, а здесь (формально не бонус) манифест всё равно реализован — как готовая, но пока не действующая основа.
 - **Classic PAT вместо fine-grained** для `ghcr-credentials` — на момент написания GitHub не поддерживает fine-grained-токены для push в GHCR-пакеты; scope сужен до `write:packages`, токен привязан к отдельному, не личному GitHub-аккаунту использования (тот же PAT, что и при ручной публикации образов в Задании 3).
 - **Jenkins UI/API полностью закрыт снаружи**, доступ только через `kubectl port-forward` — сознательное решение до конца проекта (не промежуточный шаг): на том же физическом сервере `mbdai` работает реальный прод `shelternearyou.online`, публиковать ещё один административный интерфейс наружу без явной необходимости — не оправданный риск.
+
+## Kubernetes: Мониторинг (Задание 5)
+
+Prometheus + Grafana развёрнуты в том же k3s-кластере на `mbdai`, в отдельном namespace `observability` (не `miklat-app`, не `jenkins`) — чартом `kube-prometheus-stack` (`88.6.3`, appVersion `v0.93.1`, версия зафиксирована явно). Весь слой — как код: Helm values в Git, ServiceMonitor/PodMonitor/PrometheusRule/дашборды — манифесты, ничего не создавалось руками через UI Grafana/Prometheus.
+
+Диаграмма (Prometheus/Grafana/Alertmanager, потоки discovery/scrape, интеграция с CD) — `docs/architecture-task5.md` (mermaid, рендерится нативно на GitHub) или `docs/task5-monitoring.png`.
+
+### Файлы (`monitoring/`)
+
+| Файл/папка | Что содержит |
+|---|---|
+| `values-kube-prometheus-stack.yaml` | Helm values чарта `kube-prometheus-stack`: Prometheus (PVC 5Gi, retention 7d, resources), Grafana (без персистентности — дашборды/датасорсы как код), Alertmanager (demo-receiver), `defaultRules.create: false`/`grafana.defaultDashboardsEnabled: false` (свои алерты/дашборды вместо чартовых), `*SelectorNilUsesHelmValues: false` (discovery ServiceMonitor/PodMonitor/PrometheusRule по всем namespace) |
+| `service-monitors/miklat-app-services.yaml` | `ServiceMonitor` на 7 портов приложения (`namespace: miklat-app`, 15s interval) |
+| `slo-recording-rules.yaml` | `PrometheusRule` (recording): 9 правил, 2 группы — availability и latency (см. SLI/SLO ниже) |
+| `alerts/miklat-alerts.yaml` | `PrometheusRule` (alerting): 6 алертов, 4 группы (см. ниже) |
+| `dashboards/application-overview.yaml`, `dashboards/kubernetes-cluster.yaml`, `dashboards/jenkins-delivery.yaml` | 3 обязательных дашборда — каждый `ConfigMap` (лейбл `grafana_dashboard: "1"`) с вложенным JSON |
+| `network-policy.yaml` | 12 объектов `NetworkPolicy` для namespace `observability` (см. Security ниже) |
+| `slo-queries.md` | Полная документация SLI/SLO: определения, пороги, PromQL, команды ручной проверки |
+
+ServiceMonitor для самого Jenkins отдельным файлом не создавался — он создаётся автоматически самим Helm-чартом `jenkins/jenkins` при `controller.prometheus.enabled=true` (см. Задание 4, `jenkins/values.yaml`), с эндпоинтом `/prometheus`.
+
+Дополнительно (интеграция с CI/CD, Задание 4 файлы обновлены, не пересозданы): `ci/validate_monitoring.py` (новый), `Jenkinsfile-ci` (новая стадия `Validate monitoring manifests`), `Jenkinsfile-cd` (новая стадия `Monitoring health gate`), `jenkins/network-policy.yaml` (добавлено правило egress для `cd-agent` → `observability`). А также `runbooks/*.md` — 6 файлов, по одному на каждый алерт (см. ниже).
+
+### Что мониторится
+
+| Источник | Как собирается | Что видно |
+|---|---|---|
+| Приложение (7 сервисов) | `/metrics` (`prometheus-fastapi-instrumentator`) + `ServiceMonitor` | `http_requests_total`, `http_request_duration_seconds`/`_highr_seconds`, `app_info{version,git_sha,release}`, 5 доменных бизнес-метрик (`miklat_routes_calculated_total` и т.п. — по одной у 5 из 6 backend-сервисов, `miklat-gateway` как чистый API-gateway — без своей) |
+| Kubernetes (k3s) | `kube-state-metrics`, `node-exporter`, kubelet/cAdvisor | ноды, поды, ресурсы (CPU/memory/throttling), рестарты, `Deployment` replicas desired vs available, PVC usage |
+| Jenkins | плагин `prometheus` (`/prometheus`) | очередь сборок, executors/agents по label, health score и результат последнего билда по job, uptime |
+
+`frontend` (nginx) метрики в этой итерации не инструментированы — сознательное решение: ни SLI/SLO, ни один из 6 обязательных алертов, ни 2 из 3 дашбордов на frontend не завязаны (SLO строится на API backend-сервисов), отложено на конец Фазы 5 (нужен отдельный `nginx-prometheus-exporter`-сайдкар).
+
+### Дашборды (Grafana)
+
+Все три — provisioning через ConfigMap + Grafana sidecar (`grafana.sidecar.dashboards`, `searchNamespace: ALL`), не ручной import:
+
+| Дашборд | uid | Панелей |
+|---|---|---|
+| Application Overview | `miklat-application-overview` | 11 (request rate/error rate/availability %/latency p50-95-99/5 бизнес-метрик/`app_info`-таблица/CPU+memory по подам/2 SLO-compliance панели) |
+| Kubernetes / Cluster | `miklat-kubernetes-cluster` | 11 (node ready/pending pods/OOMKilled/disk usage/CPU+memory ноды/CPU throttling по подам/pods by phase/pod restarts/deployment replicas desired vs available/PVC usage) |
+| Jenkins & Delivery | `miklat-jenkins-delivery` | 11 (scrape health/uptime/очередь/health score по job/результат последнего билда/время с последнего билда/длительность сборки/время ожидания в очереди/executors/nodes online/тренд CI-CD outcome) |
+
+### SLI/SLO
+
+Полная формула и обоснование порогов — `monitoring/slo-queries.md`. Кратко: два SLI — **availability** (доля запросов без `5xx` за 5 минут) и **latency** (p95 за 5 минут), с порогами **>= 98%** и **< 400мс** соответственно, подобранными по реальным измеренным данным (p95 у большинства сервисов 22-25мс, у более тяжёлых `miklat-service`/`miklat-photos` — 93-98мс; порог 400мс сознательно взят с запасом на случай замедления под нагрузкой). Обе метрики — `PrometheusRule` recording rules (`monitoring/slo-recording-rules.yaml`, группы `miklat.slo.availability`/`miklat.slo.latency`), а не сырой PromQL, продублированный в каждом дашборде/алерте/health-gate по отдельности — один источник истины, три потребителя (дашборд Application Overview, оба алерта `HighErrorRate`/`HighLatencyP95`, CD health-gate).
+
+Отдельный технический нюанс, зафиксированный в комментариях файла: `sum(rate(http_requests_total{status="5xx"}[5m]))` возвращает **пустой** вектор (не `0`) при отсутствии ошибок — без явного `or (0 * ...)`-фолбэка job с нулём ошибок пропадал бы из availability-расчёта вместо честного отображения 100%.
+
+### Алерты и runbook'и
+
+6 алертов (`monitoring/alerts/miklat-alerts.yaml`, `PrometheusRule`, 4 группы), каждый — с `severity`, `summary`, `description` и `runbook_url` на реальный файл в `runbooks/`:
+
+| Алерт | severity | Группа | Условие | Runbook |
+|---|---|---|---|---|
+| `HighErrorRate` | critical | application | availability < 98% на 5+ мин | `runbooks/high-error-rate.md` |
+| `HighLatencyP95` | warning | application | p95 > 400мс на 5+ мин | `runbooks/high-latency-p95.md` |
+| `ReplicasMismatch` | warning | kubernetes | available < desired реплик на 10+ мин | `runbooks/replicas-mismatch.md` |
+| `NodeNotReadyOrPressure` | critical | kubernetes | нода не Ready или под ресурсным давлением 5+ мин | `runbooks/node-not-ready-or-pressure.md` |
+| `JenkinsQueueStuck` | warning | jenkins | очередь сборок застряла/заблокирована 10+ мин | `runbooks/jenkins-queue-stuck.md` |
+| `PrometheusTargetDown` | critical | monitoring | `up == 0` у любого из собственных компонентов 5+ мин | `runbooks/prometheus-target-down.md` |
+
+Каждый `runbooks/*.md` — симптом → диагностика (реальные команды) → вероятные причины (специфичные для истории этого кластера) → устранение → ссылка на evidence будущих учений отказа (п.8, `docs/evidence/task5/`).
+
+### CI/CD-интеграция
+
+- **CI** (`Jenkinsfile-ci`, стадия `Validate monitoring manifests`, сразу после `Validate`): `ci/validate_monitoring.py` — статическая проверка схемы (без обращения к кластеру) `PrometheusRule`/`ServiceMonitor`/dashboard-`ConfigMap` — падает с понятной ошибкой на отсутствующем `runbook_url`, пустых `panels` и т.п. Сам деплой дашбордов/правил через CI не делается (Observability as Code — только `git → kubectl apply` вручную/на сервере).
+- **CD** (`Jenkinsfile-cd`, стадия `Monitoring health gate`, после `Smoke test`, пропускается для `frontend`): пауза 30с (2 цикла scrape), затем через Prometheus API проверяются `up{job=<service>}==1`, `job:http_request_availability:ratio5m >= 0.98`, `job:http_request_duration_highr_seconds:p95_5m < 0.4` — те же recording rules из SLI/SLO, без дублирования формул. Провал любой проверки — `error()`, автоматически запускающий уже существующий `post{failure}` `helm rollback` (новой rollback-логики не потребовалось).
+
+Реальный сквозной прогон подтверждён (`docs/evidence/task5/cd-health-gate-successful-run.txt`): билд `miklat-cd` для `miklat-gateway` прошёл health-gate с `up=1`, `availability=1` (100%), `p95≈23мс` — пайплайн завершился `SUCCESS`.
+
+### Security
+
+#### Exposure
+
+Ни Prometheus, ни Grafana, ни Alertmanager не публикуются через Ingress — единственный доступ к UI/API всех трёх (в т.ч. для всех проверок в этом разделе) — `kubectl port-forward`, доступный только тому, у кого уже есть `kubectl`-доступ к кластеру. Это исключительно ручной инструмент для проверки/просмотра человеком — ни scrape, ни provisioning дашбордов, ни обработка алертов от него не зависят.
+
+#### RBAC
+
+Собственные `ServiceAccount` у компонентов стека, без `cluster-admin`. Prometheus Operator — единственный компонент, которому реально нужен доступ на чтение объектов кластера (для discovery `ServiceMonitor`/`PodMonitor`/`PrometheusRule` и управления `Alertmanager`/`Prometheus` CRD) — это осознанное отличие от Задания 3 (там RBAC у приложения был буквально нулевым), но по-прежнему без cluster-wide прав на запись за пределами своих CRD.
+
+#### Secrets
+
+Пароль администратора Grafana — Kubernetes `Secret` `grafana-admin-secret` (namespace `observability`, ключи `admin-user`/`admin-password`), подключён через `grafana.admin.existingSecret` в values — в Git не попадает, тот же паттерн, что и `jenkins-admin-secret` в Задании 4. Receiver Alertmanager — безопасный demo-вебхук (`https://httpbin.org/post`, просто логирует тело), не реальный продовый канал — сознательно, чтобы не заводить в репозитории реальные секреты нотификаций ради демонстрации самого механизма роутинга.
+
+#### NetworkPolicy (`monitoring/network-policy.yaml`)
+
+12 объектов на namespace `observability`: `default-deny-all` (baseline) + `allow-dns-egress` + отдельные ingress/egress-пары для `prometheus`/`alertmanager`/`grafana`/`kube-state-metrics`/`operator`, каждое правило — под один реально подтверждённый поток (включая admission webhook Prometheus Operator на 10250, отдельно протестированный созданием и удалением тестового `PrometheusRule`). Симметрично дополнен `jenkins/network-policy.yaml` (Задание 4) — egress `cd-agent → observability:9090` для CD health-gate.
+
+В отличие от формулировки в разделе Security Задания 3/4 (там зафиксировано, что дефолтный CNI `flannel` NetworkPolicy не enforce'ит) — начиная с Фазы 5 подтверждено, что k3s на этом кластере реально enforce'ит `NetworkPolicy` через собственный встроенный контроллер (если явно не передан флаг `--disable-network-policy`; см. также инцидент с JNLP-портом Jenkins в Задании 4, где это было впервые обнаружено). Обе оговорки в предыдущих разделах README про "flannel не enforce'ит" на момент их написания были честной, но впоследствии опровергнутой находкой — актуальное состояние отражено здесь и будет приведено в соответствие в остальных разделах при переводе README (Фаза 6).
+
+### Известные компромиссы (trade-offs) и открытые пункты
+
+- **Метрики `frontend` (nginx)** — сознательно отложены на конец Фазы 5 (нужен `nginx.conf`/Dockerfile фронтенда для сайдкара `nginx-prometheus-exporter`), ни один обязательный SLI/SLO/алерт/дашборд от них не зависит.
+- **Alertmanager receiver — demo-вебхук**, не реальный Slack/PagerDuty — осознанно, чтобы не заводить в репозитории реальные секреты нотификаций.
+- **Учения отказа (п.8, 4 сценария)** и соответствующий evidence в `docs/evidence/task5/` — в процессе; секции "Evidence" в `runbooks/*.md` пока содержат плейсхолдеры, будут дополнены реальными командами/выводом по мере прогона каждого сценария.
