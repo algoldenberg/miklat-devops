@@ -1,0 +1,30 @@
+Task 5, п.3 — 3 required Grafana dashboards: live confirmation via Grafana API.
+
+Command: curl -s -u "$GRAFANA_USER:$GRAFANA_PASS" 'http://localhost:3000/api/search?type=dash-db'
+(via kubectl port-forward -n observability svc/kube-prometheus-stack-grafana
+3000:80; credentials decoded from Secret grafana-admin-secret, namespace
+observability), run on mbdai, 2026-09-04.
+
+Confirms all 3 required dashboards are provisioned in Grafana (sidecar
+picked up the ConfigMaps from monitoring/dashboards/*.yaml, no manual
+import through the UI):
+
+- Application Overview — uid miklat-application-overview,
+  monitoring/dashboards/application-overview.yaml, 11 panels (request
+  rate/error rate/availability %/latency p50-p95-p99/5 business metrics/
+  app_info table/CPU+memory by pod, plus 2 SLO-compliance stat panels added
+  in п.5).
+- Kubernetes / Cluster — uid miklat-kubernetes-cluster,
+  monitoring/dashboards/kubernetes-cluster.yaml, 11 panels (node
+  ready/pending pods/OOMKilled/disk usage/CPU+memory/CPU throttling by pod/
+  pods by phase/pod restarts/deployment replicas desired vs available/PVC
+  usage).
+- Jenkins & Delivery — uid miklat-jenkins-delivery,
+  monitoring/dashboards/jenkins-delivery.yaml, 11 panels (scrape health/
+  uptime/queue state/health score by job/last build result/time since last
+  build/build duration/queue wait time/executors state/nodes online/CI-CD
+  run outcome trend).
+
+Raw JSON response:
+
+[{"id":1402104648654848,"uid":"miklat-application-overview","orgId":1,"title":"Application Overview","uri":"db/application-overview","url":"/d/miklat-application-overview/application-overview","slug":"","type":"dash-db","tags":["application","miklat","task5"],"isStarred":false,"sortMeta":0,"isDeleted":false},{"id":1617633619566592,"uid":"miklat-jenkins-delivery","orgId":1,"title":"Jenkins & Delivery","uri":"db/jenkins-and-delivery","url":"/d/miklat-jenkins-delivery/jenkins-and-delivery","slug":"","type":"dash-db","tags":["jenkins","miklat","task5"],"isStarred":false,"sortMeta":0,"isDeleted":false},{"id":1613308381978624,"uid":"miklat-kubernetes-cluster","orgId":1,"title":"Kubernetes / Cluster","uri":"db/kubernetes-cluster","url":"/d/miklat-kubernetes-cluster/kubernetes-cluster","slug":"","type":"dash-db","tags":["kubernetes","miklat","task5"],"isStarred":false,"sortMeta":0,"isDeleted":false}]

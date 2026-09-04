@@ -1,0 +1,139 @@
+Task 5, п.8 — Failure drill 1/4: HighErrorRate (real, controlled fault injection).
+
+Date: 2026-09-04, cluster mbdai (k3s), namespace miklat-app / observability.
+
+Goal: prove the HighErrorRate alert (monitoring/alerts/miklat-alerts.yaml,
+group miklat.alerts.application) fires on a real sustained availability drop
+below the 98% SLO, reaches Alertmanager, and clears automatically once the
+fault is fixed — without touching the unrelated shelternearyou.online
+production stack on the same host.
+
+Why this specific fault, not a DB/S3/SNS outage: miklat-gateway is a pure
+proxy with no database of its own. Its readiness does not depend on
+downstream service health (per README: GET /ready aggregates downstream
+status in the response body but does not fail the HTTP status), so breaking
+one of its proxy targets keeps the gateway pod Ready and its own /metrics
+scrape healthy (up=1) — real 5xx responses accumulate in
+http_requests_total{status="5xx",job="miklat-gateway"} without also
+triggering PrometheusTargetDown or starving the target of scrape data. A
+DB/S3/SNS-based fault was rejected first: it would fail the target service's
+own /ready probe, pull it out of the Service's Endpoints, and stop Prometheus
+scraping it entirely — producing PrometheusTargetDown instead of
+HighErrorRate.
+
+--------------------------------------------------------------------------
+1. Fault injection
+--------------------------------------------------------------------------
+
+Command (run on mbdai):
+
+  kubectl set env deployment/miklat-gateway -n miklat-app \
+    MIKLAT_COMMENTS_URL=http://miklat-comments-broken.miklat-app.svc.cluster.local:8000
+  kubectl rollout status deployment/miklat-gateway -n miklat-app --timeout=60s
+
+Result: new ReplicaSet rolled out cleanly (deployment.apps/miklat-gateway env
+updated -> successfully rolled out). Confirmed via
+`kubectl get deployment miklat-gateway -o jsonpath='{...containers[0].env}'`
+that MIKLAT_COMMENTS_URL was now a literal bad value instead of its normal
+configMapKeyRef (name: miklat-config, key: MIKLAT_COMMENTS_URL).
+
+Sanity check before the full load (via kubectl port-forward -n miklat-app
+svc/miklat-gateway 28000:8000):
+
+  curl .../health           -> 200   (gateway itself healthy)
+  curl .../miklats/1/comments -> 503 (real failure via the broken proxy target)
+
+--------------------------------------------------------------------------
+2. Sustained load (generating real 5xx over the alert's 5-minute `for` window)
+--------------------------------------------------------------------------
+
+45 requests to GET /miklats/1/comments (a real public endpoint proxied by
+miklat-gateway to miklat-comments), 8s apart, ~6 minutes total
+(10:42:46 - 10:48:39 local time on mbdai). All 45 attempts returned 503.
+
+(Note: a first attempt at this load generation accidentally targeted local
+port 18000, which on this shared host is already bound by the real
+production Docker Compose stack's docker-proxy, not our port-forward -
+diagnosed via `ss -tlnp` and `ps aux | grep port-forward` before retrying on
+port 28000, which was confirmed free.)
+
+--------------------------------------------------------------------------
+3. Confirmed firing (three independent checks)
+--------------------------------------------------------------------------
+
+a) Recording rule value (Prometheus), during the fault:
+
+  GET /api/v1/query?query=job:http_request_availability:ratio5m{job="miklat-gateway"}
+  -> {"metric":{"job":"miklat-gateway"},"value":[1788518979.794,"0.6907216494845361"]}
+
+  69.07% availability, well below the 98% SLO.
+
+b) Alert rule state (Prometheus /api/v1/rules?type=alert):
+
+  {
+      "state": "firing",
+      "name": "HighErrorRate",
+      "query": "job:http_request_availability:ratio5m < 0.98",
+      "duration": 300,
+      "keepFiringFor": 0,
+      "labels": {"category": "application", "severity": "critical"},
+      ...
+  }
+
+c) Alertmanager received the firing alert (GET /api/v2/alerts):
+
+  [{"annotations":{
+      "description":"Availability сервиса miklat-gateway — 69.07%, ниже SLO 98% на протяжении 5+ минут (recording rule job:http_request_availability:ratio5m, monitoring/slo-recording-rules.yaml).",
+      "runbook_url":"https://github.com/algoldenberg/miklat-devops/blob/main/runbooks/high-error-rate.md",
+      "summary":"Высокий error rate на сервисе miklat-gateway"},
+    "endsAt":"2026-09-04T10:53:36.016Z",
+    "fingerprint":"eda8e77bc4933ece",
+    "receivers":[{"name":"demo-webhook"}],
+    "startsAt":"2026-09-04T10:48:06.016Z",
+    "status":{"inhibitedBy":[],"mutedBy":[],"silencedBy":[],"state":"active"},
+    "updatedAt":"2026-09-04T10:49:36.018Z",
+    "generatorURL":"http://kube-prometheus-stack-prometheus.observability:9090/graph?g0.expr=job%3Ahttp_request_availability%3Aratio5m+%3C+0.98&g0.tab=1",
+    "labels":{"alertname":"HighErrorRate","category":"application","job":"miklat-gateway","prometheus":"observability/kube-prometheus-stack-prometheus","severity":"critical"}}]
+
+Note the annotations are in Russian — this is the alert's real
+`description`/`summary` text as authored in monitoring/alerts/miklat-alerts.yaml,
+reproduced verbatim, not translated, to keep the evidence authentic.
+
+startsAt 10:48:06 confirms the alert transitioned pending -> firing almost
+exactly 5 minutes (the `for: 300s`) after the load generation began at
+10:42:46 (delta: 5m20s, consistent with the 30s Prometheus rule evaluation
+interval adding a small margin).
+
+--------------------------------------------------------------------------
+4. Recovery
+--------------------------------------------------------------------------
+
+Command: kubectl rollout undo deployment/miklat-gateway -n miklat-app
+(reverts to the previous ReplicaSet, before the `kubectl set env` patch -
+chosen over manually re-setting the env var, since `kubectl set env` would
+have converted MIKLAT_COMMENTS_URL from configMapKeyRef to a literal value
+instead of restoring the original reference).
+
+Confirmed via jsonpath: MIKLAT_COMMENTS_URL is back to
+`valueFrom.configMapKeyRef{name: miklat-config, key: MIKLAT_COMMENTS_URL}`.
+Real request confirms recovery: GET /miklats/1/comments -> 200.
+
+--------------------------------------------------------------------------
+5. Confirmed resolution (not just the fix — the alert clearing itself)
+--------------------------------------------------------------------------
+
+Checked 90s after the fix: ratio was still low (alert still "firing") -
+expected, not a bug: job:http_request_availability:ratio5m is itself a
+5-minute trailing window, so the ~6 minutes of accumulated 503s were still
+inside the window. Re-checked 5 more minutes later:
+
+  job:http_request_availability:ratio5m{job="miklat-gateway"} = 1   (100%)
+  alert rule state: "inactive"
+  GET /api/v2/alerts (Alertmanager) -> empty (alert resolved, no longer active)
+
+Full recovery confirmed end-to-end: fault injected -> real 5xx generated ->
+alert fired and reached Alertmanager with correct labels/annotations/runbook
+link -> fault reverted via a real rollback -> alert cleared on its own once
+the trailing 5-minute window was clean again. Production
+(shelternearyou.online) was never touched — only miklat-gateway's own env,
+within namespace miklat-app.

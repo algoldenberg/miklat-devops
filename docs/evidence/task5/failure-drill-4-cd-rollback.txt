@@ -1,0 +1,215 @@
+Task 5, п.8 — Failure drill 4/4: deploy a deliberately broken release, prove
+the CD failure path (post-п.7 Monitoring health gate + automatic helm
+rollback) actually works on a real failure, not just the healthy path.
+
+Date: 2026-09-04, cluster mbdai (k3s), namespace miklat-app, repo
+github.com/algoldenberg/miklat-devops.
+
+Goal: п.7 added a CD post-deploy "Monitoring health gate" stage (checks
+up==1, job:http_request_availability:ratio5m >= 0.98,
+job:http_request_duration_highr_seconds:p95_5m < 0.4 via the Prometheus API)
+plus post{failure{helm rollback <RELEASE> 0}}. That stage was only ever
+exercised on the healthy path (SUCCESS, real values captured: up=1,
+availability=1, p95=0.023s). This drill's purpose was to push a genuinely
+broken release through the real CI/CD pipeline (not a kubectl-level hack
+like drills 1-3) and confirm the failure path — ending in an automatic
+rollback — is real.
+
+--------------------------------------------------------------------------
+1. Intended fault design
+--------------------------------------------------------------------------
+
+Target: miklat-comments, endpoint GET /miklats/{miklat_id}/comments
+(services/miklat-comments/app/routers/comments.py). Chosen because it is a
+real public endpoint (already used in drill 1's load generation), and
+because its own /health and /ready (main.py) could be left completely
+untouched — the intent was a release that looks alive (passes readiness,
+passes a Smoke test that only checks /health) but is actually broken for
+real traffic, so specifically the Monitoring health gate's availability
+check — not Deploy/Rollout/Smoke test — would be the one to catch it.
+
+Injected code (commit 71acc5a, "test: inject intentional 500 in GET
+/comments for Task 5 drill 4 (CD failure-path test)"):
+
+  @router.get("/comments", response_model=list[CommentOut])
+  def get_comments(miklat_id: int, limit: int = ..., offset: int = ...):
+      raise HTTPException(status_code=500, detail="Intentional failure (Task 5 drill 4)")
+      return crud.list_comments(miklat_id, limit=limit, offset=offset)
+
+Pushed to main -> GitHub webhook -> miklat-ci #38 (auto) -> detected
+miklat-comments as the only changed service -> triggered miklat-build #7
+-> triggered miklat-cd #19, all automatically, with SERVICE_NAME=
+miklat-comments, IMAGE_TAG=71acc5a - the full real path from a commit to a
+deploy attempt, not a manually-parameterized CD run like the Phase 4
+rollback test.
+
+--------------------------------------------------------------------------
+2. What actually happened - a real, unplanned finding
+--------------------------------------------------------------------------
+
+The intended bug never got the chance to run. The new pod
+(miklat-comments-789759cf9-85dd8) went straight to CrashLoopBackOff (5
+restarts in ~4 minutes, observed live via kubectl get pods). Real cause,
+confirmed via kubectl get events (not guessed):
+
+  Warning  Failed  pod/miklat-comments-789759cf9-85dd8
+  Error: failed to create containerd task: failed to create shim task:
+  OCI runtime create failed: runc create failed: unable to start container
+  process: error during container init: exec: "uvicorn": executable file
+  not found in $PATH
+
+The container itself could not even start - our application-level change
+(a route handler raising HTTPException) never had a chance to matter,
+because uvicorn - the process the Dockerfile's CMD launches - was missing
+from the image entirely, despite being a normal dependency
+(uvicorn[standard]==0.30.6) in requirements.txt.
+
+Root cause, confirmed from the real kaniko build log (job miklat-build #7,
+container('kaniko'), image ghcr.io/algoldenberg/miklat-comments:71acc5a):
+
+  INFO Checking for cached layer ghcr.io/algoldenberg/miklat-comments/cache:e67c2...
+  INFO Using caching version of cmd: RUN pip install --no-cache-dir -r requirements.txt
+  ...
+  INFO RUN pip install --no-cache-dir -r requirements.txt
+  INFO Found cached layer, extracting to filesystem
+
+kaniko reused a CACHED layer for the `RUN pip install` step instead of
+actually running it. That cached layer (pushed to the registry from some
+earlier build) did not contain a working uvicorn install. This is the same
+class of bug already seen once in this project during the Phase 5 "CI/CD
+chain of bugs" incident ("отравленный registry-кэш") - here it resurfaced
+specifically for miklat-comments' pip-install layer, apparently sitting
+poisoned in the registry cache since then, waiting for the next real
+rebuild of this exact service to expose it. Our code change did not cause
+this - it only changed app/, not requirements.txt, so the pip-install
+layer's cache key was unaffected and the stale/broken cached layer got
+reused exactly as kaniko's caching is designed to do.
+
+--------------------------------------------------------------------------
+3. Real CD failure and automatic rollback (an earlier stage than planned,
+   but a real, valid failure path per the plan's own wording)
+--------------------------------------------------------------------------
+
+Because the new pod could never become Ready, `helm upgrade --install
+--wait --timeout 5m` (the Deploy stage) itself timed out - the pipeline
+never reached Smoke test or Monitoring health gate at all this run:
+
+  helm upgrade --install miklat-app helm/miklat-app --namespace miklat-app \
+    --reuse-values --set 'miklatComments.imageTag=71acc5a' --wait --timeout 5m
+  level=WARN msg="upgrade failed" name=miklat-app error="resource
+  Deployment/miklat-app/miklat-comments not ready. status: InProgress,
+  message: Pending termination: 1\ncontext deadline exceeded"
+  Error: UPGRADE FAILED: resource Deployment/miklat-app/miklat-comments not
+  ready. status: InProgress, message: Pending termination: 1
+
+  Rollout status / Verify Pods/Services / Smoke test / Monitoring health
+  gate: all "skipped due to earlier failure(s)".
+
+`post { failure { ... } }` fired automatically and correctly:
+
+  helm rollback miklat-app 0 --namespace miklat-app --wait --timeout 5m
+  -> Rollback was a success! Happy Helming!
+  kubectl rollout status deployment/miklat-comments -n miklat-app --timeout=120s
+  -> deployment "miklat-comments" successfully rolled out
+
+No manual kubectl/helm command was run to fix this - the pipeline caught
+its own broken deploy and reverted itself end-to-end, with zero human
+intervention beyond having pushed the (unintentionally doubly-broken)
+commit in the first place.
+
+Honest gap: the crashed pod (miklat-comments-789759cf9-85dd8) was already
+garbage-collected by the time we tried `kubectl logs --previous` on it (the
+automatic rollback's ReplicaSet scale-down had already removed it), so we
+never captured the container's own stdout/stderr for the crash itself -
+root cause was established instead from kubectl events (still within their
+TTL) and the kaniko build log, which were sufficient to fully explain what
+happened without guessing.
+
+--------------------------------------------------------------------------
+4. Fix: revert the intentional fault + bust the poisoned cache (one commit)
+--------------------------------------------------------------------------
+
+Reverting the code alone would not have been enough - requirements.txt was
+untouched, so the pip-install layer's cache key would stay identical and
+the very next build would hit the exact same poisoned cache and fail the
+exact same way. Both fixes were bundled into one push:
+
+  git revert 71acc5a07e15cfa1ffae92211f890c9f7d48b374 --no-commit
+  (+ appended two comment lines to services/miklat-comments/requirements.txt
+    specifically to change the COPY requirements.txt layer's content hash,
+    forcing kaniko to invalidate and recompute the RUN pip install layer)
+  git commit -m "fix: bust poisoned kaniko pip-install cache for miklat-comments"
+  git push
+  -> commit c6c8ef3
+
+Confirmed via the next kaniko build log (miklat-build, tag c6c8ef3) that
+the cache was genuinely busted, not just assumed fixed:
+
+  INFO Checking for cached layer ghcr.io/algoldenberg/miklat-comments/cache:36a678...
+  INFO No cached layer found for cmd RUN pip install --no-cache-dir -r requirements.txt
+  ...
+  Collecting fastapi==0.115.0 ...
+  Collecting uvicorn==0.30.6 (from uvicorn[standard]==0.30.6->-r requirements.txt (line 2)) ...
+  Successfully installed ... uvicorn-0.30.6 ...
+  INFO Pushing layer ghcr.io/algoldenberg/miklat-comments/cache:36a678... to cache now
+
+A fresh, correct cache layer for this command now exists in the registry
+going forward.
+
+--------------------------------------------------------------------------
+5. Final re-verification: full healthy CD run, Monitoring health gate
+   genuinely exercised on live data
+--------------------------------------------------------------------------
+
+The next automatic CD run (miklat-cd, tag c6c8ef3) went cleanly through
+every stage:
+
+  Deploy: helm upgrade --install ... --wait --timeout 5m -> STATUS: deployed
+  Rollout status: deployment "miklat-comments" successfully rolled out
+  Verify Pods/Services: pod Running 1/1; real running image confirmed =
+    ghcr.io/algoldenberg/miklat-comments:c6c8ef3
+  Smoke test: GET .../health -> HTTP 200
+  Monitoring health gate (real live Prometheus values, not placeholders):
+    up{job="miklat-comments"} = 1
+    job:http_request_availability:ratio5m{job="miklat-comments"} = 1
+    job:http_request_duration_highr_seconds:p95_5m{job="miklat-comments"} = 0.022606951443406423s
+    -> "Health-gate пройден" (all three checks passed)
+  Declarative: Post Actions -> SUCCESS
+
+--------------------------------------------------------------------------
+6. Honest scope note on what this drill did and did not prove
+--------------------------------------------------------------------------
+
+This drill fully proves the CD pipeline's automatic failure-detection and
+rollback safety net works end-to-end on a genuine, real-world broken
+release pushed through the actual CI/CD path (commit -> build -> deploy),
+with zero manual kubectl/helm intervention required to recover - exactly
+the outcome the plan asked for ("CD должен упасть ... и выполнить
+rollback"). The stage that actually caught the failure was Deploy (helm
+rollout timeout on a crash-looping pod), which the plan explicitly allowed
+for ("или раньше, на Smoke test" - this was even earlier). What was NOT
+specifically exercised in a failing capacity is the new Monitoring health
+gate stage itself, because the intended application-level bug (which would
+have kept the pod Ready and only shown up as a real availability drop)
+never got the chance to run - a separate, real, previously-latent
+infrastructure bug (the poisoned kaniko cache) was caught first instead.
+The health gate stage was still genuinely exercised end-to-end during the
+final re-verification (step 5) and shown to correctly evaluate live
+Prometheus data and pass - just not in a failing capacity within this
+drill. This is recorded plainly rather than reframed as a full test of the
+health gate's failure path specifically.
+
+Production (shelternearyou.online) was never touched at any point - all
+faults, the broken image, the crash loop, and the rollback were entirely
+contained to miklat-comments in namespace miklat-app.
+
+--------------------------------------------------------------------------
+7. Bonus real fix delivered by this drill
+--------------------------------------------------------------------------
+
+Beyond the drill itself, this uncovered and fixed a real, previously
+undetected production-adjacent bug: the kaniko build cache for
+miklat-comments' `RUN pip install` layer was poisoned (missing a working
+uvicorn), silently waiting to break the next real rebuild of this service
+regardless of this drill. It is now fixed and verified with a fresh,
+correct cache layer.

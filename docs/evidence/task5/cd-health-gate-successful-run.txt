@@ -1,0 +1,307 @@
+Task 5, п.7 — CD post-deploy Prometheus health gate: real successful run.
+
+Context: real Jenkins build of job `miklat-cd`, triggered manually via
+"Build with Parameters" (SERVICE_NAME=miklat-gateway, IMAGE_TAG=c0a2de5 —
+same tag already running, a safe no-op redeploy used specifically to
+exercise the newly added "Monitoring health gate" stage end-to-end without
+changing what's actually running). Full pipeline succeeded through every
+stage, including the new gate: up{job="miklat-gateway"}=1, availability
+(recording rule, 5m window) = 1 (100%), p95 latency (recording rule, 5m
+window) = 0.023232142857142857s (~23ms) — both well within the SLO
+thresholds (availability >= 98%, p95 < 400ms). Pipeline finished SUCCESS.
+
+Console Output is reproduced verbatim below, including the pipeline's own
+Russian echo/log lines (Jenkinsfile-cd was written with Russian inline
+messages) — these are real product output and are not translated, to keep
+the evidence authentic.
+
+================================================================================
+
+Started by user Jenkins Admin
+Checking out git https://github.com/algoldenberg/miklat-devops.git into /var/jenkins_home/jobs/miklat-cd/workspace@script/cdd4e4bdf37c72e87e536b4366e3fcf445034c798aa2b916a4b9aa7fba54dd46 to read Jenkinsfile-cd
+The recommended git tool is: NONE
+No credentials specified
+ > git rev-parse --resolve-git-dir /var/jenkins_home/jobs/miklat-cd/workspace@script/cdd4e4bdf37c72e87e536b4366e3fcf445034c798aa2b916a4b9aa7fba54dd46/.git # timeout=10
+Fetching changes from the remote Git repository
+ > git config remote.origin.url https://github.com/algoldenberg/miklat-devops.git # timeout=10
+Fetching upstream changes from https://github.com/algoldenberg/miklat-devops.git
+ > git --version # timeout=10
+ > git --version # 'git version 2.47.3'
+ > git fetch --tags --force --progress -- https://github.com/algoldenberg/miklat-devops.git +refs/heads/*:refs/remotes/origin/* # timeout=10
+ > git rev-parse origin/main^{commit} # timeout=10
+Checking out Revision c78190675821f65880d064de926cea8b5b4f4b3e (origin/main)
+ > git config core.sparsecheckout # timeout=10
+ > git checkout -f c78190675821f65880d064de926cea8b5b4f4b3e # timeout=10
+Commit message: "Add CI monitoring manifest validation + CD Prometheus health-gate (Task 5, п.7)"
+ > git rev-list --no-walk 5ee9cc90bdec6ab3ad54ae20a6b3d83a07c8a9f4 # timeout=10
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Agent cd-agent-cx0wn
+ is provisioned from template cd-agent
+---
+apiVersion: "v1"
+kind: "Pod"
+metadata:
+  annotations:
+    kubernetes.jenkins.io/last-refresh: "1788514846522"
+  labels:
+    jenkins/jenkins-jenkins-agent: "true"
+    jenkins/label-digest: "47638cd3eb28cfcd11366e58f525b6ccddf40d9a"
+    jenkins/label: "cd-agent"
+    kubernetes.jenkins.io/controller: "http___jenkins_jenkins_svc_cluster_local_8080x"
+  name: "cd-agent-cx0wn"
+  namespace: "jenkins"
+spec:
+  containers:
+  - command:
+    - "cat"
+    image: "dtzar/helm-kubectl:4.2.3"
+    imagePullPolicy: "IfNotPresent"
+    name: "kubectl-helm"
+    resources:
+      limits:
+        memory: "512Mi"
+        cpu: "500m"
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+    tty: true
+    volumeMounts:
+    - mountPath: "/home/jenkins/agent"
+      name: "workspace-volume"
+      readOnly: false
+  - env:
+    - name: "JENKINS_SECRET"
+      value: "********"
+    - name: "JENKINS_TUNNEL"
+      value: "jenkins-agent.jenkins.svc.cluster.local:50000"
+    - name: "JENKINS_AGENT_NAME"
+      value: "cd-agent-cx0wn"
+    - name: "REMOTING_OPTS"
+      value: "-noReconnectAfter 1d"
+    - name: "JENKINS_NAME"
+      value: "cd-agent-cx0wn"
+    - name: "JENKINS_AGENT_WORKDIR"
+      value: "/home/jenkins/agent"
+    - name: "JENKINS_URL"
+      value: "http://jenkins.jenkins.svc.cluster.local:8080/"
+    image: "jenkins/inbound-agent:3355.v388858a_47b_33-3-jdk21"
+    name: "jnlp"
+    resources:
+      requests:
+        memory: "256Mi"
+        cpu: "100m"
+    volumeMounts:
+    - mountPath: "/home/jenkins/agent"
+      name: "workspace-volume"
+      readOnly: false
+  nodeSelector:
+    kubernetes.io/os: "linux"
+  restartPolicy: "Never"
+  serviceAccountName: "jenkins-cd"
+  volumes:
+  - emptyDir:
+      medium: ""
+    name: "workspace-volume"
+Running on cd-agent-cx0wn
+ in /home/jenkins/agent/workspace/miklat-cd
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Declarative: Checkout SCM)
+[Pipeline] checkout
+The recommended git tool is: NONE
+No credentials specified
+Cloning the remote Git repository
+Cloning repository https://github.com/algoldenberg/miklat-devops.git
+ > git init /home/jenkins/agent/workspace/miklat-cd # timeout=10
+Fetching upstream changes from https://github.com/algoldenberg/miklat-devops.git
+ > git --version # timeout=10
+ > git --version # 'git version 2.47.3'
+ > git fetch --tags --force --progress -- https://github.com/algoldenberg/miklat-devops.git +refs/heads/*:refs/remotes/origin/* # timeout=10
+Avoid second fetch
+Checking out Revision c78190675821f65880d064de926cea8b5b4f4b3e (origin/main)
+ > git config remote.origin.url https://github.com/algoldenberg/miklat-devops.git # timeout=10
+ > git config --add remote.origin.fetch +refs/heads/*:refs/remotes/origin/* # timeout=10
+ > git rev-parse origin/main^{commit} # timeout=10
+ > git config core.sparsecheckout # timeout=10
+ > git checkout -f c78190675821f65880d064de926cea8b5b4f4b3e # timeout=10
+Commit message: "Add CI monitoring manifest validation + CD Prometheus health-gate (Task 5, п.7)"
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] withEnv
+[Pipeline] {
+[Pipeline] withEnv
+[Pipeline] {
+[Pipeline] timeout
+Timeout set to expire in 15 min
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Validate parameters)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] script
+[Pipeline] {
+[Pipeline] echo
+Деплой: сервис=miklat-gateway (values-ключ miklatGateway), тег=c0a2de5, digest=(не передан)
+[Pipeline] }
+[Pipeline] // script
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Validate manifests)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
++ helm lint helm/miklat-app --set 'miklatGateway.imageTag=c0a2de5'
+==> Linting helm/miklat-app
+[INFO] Chart.yaml: icon is recommended
+1 chart(s) linted, 0 chart(s) failed
++ helm upgrade --install miklat-app helm/miklat-app --namespace miklat-app --reuse-values --set 'miklatGateway.imageTag=c0a2de5' '--dry-run=client'
+Release "miklat-app" has been upgraded. Happy Helming!
+NAME: miklat-app
+LAST DEPLOYED: Fri Sep  4 09:40:52 2026
+NAMESPACE: miklat-app
+STATUS: pending-upgrade
+REVISION: 22
+DESCRIPTION: Dry run complete
+TEST SUITE: None
+HOOKS:
+MANIFEST:
+[... full `helm upgrade --dry-run` manifest output omitted here for brevity —
+identical Service/Deployment/ServiceAccount/ConfigMap/Ingress objects as the
+real Deploy stage below, just rendered as a dry run before the real apply.
+Full text is available in the Jenkins Console Output of build miklat-cd for
+SERVICE_NAME=miklat-gateway, IMAGE_TAG=c0a2de5.]
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Authenticate)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
++ kubectl auth can-i update deployments -n miklat-app
+yes
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Deploy (helm upgrade --install))
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
++ helm upgrade --install miklat-app helm/miklat-app --namespace miklat-app --reuse-values --set 'miklatGateway.imageTag=c0a2de5' --wait --timeout 5m
+Release "miklat-app" has been upgraded. Happy Helming!
+NAME: miklat-app
+LAST DEPLOYED: Fri Sep  4 09:40:55 2026
+NAMESPACE: miklat-app
+STATUS: deployed
+REVISION: 22
+DESCRIPTION: Upgrade complete
+TEST SUITE: None
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Rollout status)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
++ kubectl rollout status deployment/miklat-gateway -n miklat-app '--timeout=120s'
+deployment "miklat-gateway" successfully rolled out
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Verify Pods/Services)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
++ kubectl get pods -n miklat-app -l 'app=miklat-gateway'
+NAME                              READY   STATUS    RESTARTS   AGE
+miklat-gateway-66664dcdd5-kksks   1/1     Running   0          21h
++ echo -n 'Реально запущенный образ: '
+Реально запущенный образ: + kubectl get pods -n miklat-app -l 'app=miklat-gateway' -o 'jsonpath={.items[0].status.containerStatuses[0].image}'
+ghcr.io/algoldenberg/miklat-gateway:c0a2de5+ echo
++ kubectl get svc miklat-gateway -n miklat-app
+NAME             TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)    AGE
+miklat-gateway   ClusterIP   10.43.68.255   <none>        8000/TCP   4d22h
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Smoke test)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] script
+[Pipeline] {
+[Pipeline] sh
++ curl -s -o /dev/null -w '%{http_code}' http://miklat-gateway.miklat-app.svc.cluster.local:8000/health
+[Pipeline] echo
+Smoke-test: http://miklat-gateway.miklat-app.svc.cluster.local:8000/health -> HTTP 200
+[Pipeline] }
+[Pipeline] // script
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Monitoring health gate)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] script
+[Pipeline] {
+[Pipeline] sh
++ sleep 30
+[Pipeline] sh
++ curl -s http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090/api/v1/query --data-urlencode 'query=up{job="miklat-gateway"}'
++ jq -r '.data.result[0].value[1] // "NODATA"'
+[Pipeline] echo
+Health-gate: up{job="miklat-gateway"} = 1
+[Pipeline] sh
++ curl -s http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090/api/v1/query --data-urlencode 'query=job:http_request_availability:ratio5m{job="miklat-gateway"}'
++ jq -r '.data.result[0].value[1] // "NODATA"'
+[Pipeline] echo
+Health-gate: availability (recording rule, окно 5м) для miklat-gateway = 1
+[Pipeline] sh
++ + curl -sjq http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090/api/v1/query -r --data-urlencode '.data.result[0].value[1] // "NODATA"' 'query=job:http_request_duration_highr_seconds:p95_5m{job="miklat-gateway"}'
+[Pipeline] echo
+Health-gate: p95 latency (recording rule, окно 5м) для miklat-gateway = 0.023232142857142857s
+[Pipeline] echo
+Health-gate пройден: miklat-gateway — Prometheus target UP, availability >= 98%, p95 < 400ms.
+[Pipeline] }
+[Pipeline] // script
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Declarative: Post Actions)
+[Pipeline] echo
+CD: сервис=miklat-gateway тег=c0a2de5 завершён со статусом SUCCESS
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // timeout
+[Pipeline] }
+[Pipeline] // withEnv
+[Pipeline] }
+[Pipeline] // withEnv
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] End of Pipeline
+Finished: SUCCESS
+
+Note on the interleaved trace in the p95 query step ("+ + curl -sjq ... -r
+..."): this is a cosmetic artifact of concurrent stderr writes from the
+`curl | jq` pipe under `set -x` (both processes tracing at once) — the
+actual computed result, printed right after via `echo`, is correct
+(0.023232142857142857s), and was cross-checked against the same recording
+rule queried independently via port-forward.

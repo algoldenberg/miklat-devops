@@ -1,0 +1,212 @@
+Task 5, п.8 — Failure drill 3/4: JenkinsQueueStuck (real, controlled fault injection).
+
+Date: 2026-09-04, cluster mbdai (k3s), namespace jenkins.
+
+Goal: prove JenkinsQueueStuck (monitoring/alerts/miklat-alerts.yaml, group
+miklat.alerts.jenkins) fires when the Jenkins build queue stays stuck or
+blocked for 10+ minutes, reaches Alertmanager, and clears once a queued
+build can finally run — without touching the unrelated shelternearyou.online
+production stack or degrading anything outside namespace jenkins.
+
+Architectural fact this drill exploits (confirmed earlier, Jenkins & Delivery
+dashboard, п.3): built-in executors = 0. The Jenkins controller has no
+executors of its own — every single build, with no exception, must get a
+dynamically-provisioned Kubernetes agent pod (ci-agent/cd-agent pod
+templates, org.csanchez.jenkins.plugins.kubernetes). This makes agent
+provisioning itself a clean, single point to fault-inject: if the
+Kubernetes cloud plugin cannot create a pod at all, ANY triggered build is
+guaranteed to sit in the queue with no way to ever get an executor.
+
+--------------------------------------------------------------------------
+1. Fault design and why this method, not the alternatives
+--------------------------------------------------------------------------
+
+Chosen fault: a temporary Kubernetes ResourceQuota in namespace jenkins,
+capping pods to the number already running (1 - just jenkins-0 itself).
+This makes the Kubernetes plugin's own pod-creation API call fail outright
+(403 Forbidden, admission control) - zero real CPU/RAM consumed on the
+shared host, nothing that could compete with the shelternearyou.online
+Docker Compose stack running on the same mbdai box outside Kubernetes
+entirely. Fully reversible with a single kubectl delete.
+
+Rejected alternative 1: resource-exhausting a real "filler" pod so a new
+agent pod couldn't be scheduled (Pending/Insufficient cpu|memory). Rejected
+because this cluster's memory has been genuinely tight all project (RAM was
+upgraded 5.8Gi -> 7.8Gi earlier in Phase 5 specifically because of this) -
+deliberately consuming real host memory for a drill risks real memory
+pressure bleeding into the production stack on the same node. Too risky for
+a "never touch prod" constraint.
+
+Rejected alternative 2: breaking an image tag in one of the agent
+podTemplates (jenkins/values.yaml, agent.podTemplates) via helm upgrade.
+Rejected because it touches the actual Git-tracked IaC file and requires
+waiting on the config-reloader sidecar's reload timing in both directions -
+more moving parts than necessary for the same outcome the ResourceQuota
+gives directly and instantly.
+
+Baseline (confirmed live before injecting anything):
+  kubectl get resourcequota -n jenkins  -> No resources found
+  kubectl get pods -n jenkins           -> jenkins-0  2/2  Running (only pod)
+  jenkins_queue_stuck_value    = 0
+  jenkins_queue_blocked_value  = 0
+  JenkinsQueueStuck rule state = "inactive"
+
+--------------------------------------------------------------------------
+2. Fault injection
+--------------------------------------------------------------------------
+
+  cat > /tmp/miklat-drill3-quota.yaml << 'EOF'
+  apiVersion: v1
+  kind: ResourceQuota
+  metadata:
+    name: miklat-drill3-quota
+    namespace: jenkins
+  spec:
+    hard:
+      pods: "1"
+  EOF
+  kubectl apply -f /tmp/miklat-drill3-quota.yaml
+  -> resourcequota/miklat-drill3-quota created (pods: used 1, hard 1)
+
+Build #37 of the miklat-ci pipeline job was triggered manually via the
+Jenkins UI ("Build Now") - chosen over miklat-cd since it needs no deploy
+parameters and cannot touch the cluster regardless of outcome.
+
+Jenkins Console Output for #37 immediately showed:
+
+  [Pipeline] node
+  Still waiting to schedule task
+  Waiting for next available executor
+
+--------------------------------------------------------------------------
+3. Confirmed real cause (Jenkins controller's own log, not assumed)
+--------------------------------------------------------------------------
+
+  kubectl logs jenkins-0 -n jenkins -c jenkins --since=10m | grep -i -B2 -A5 "exceeded|quota|provision"
+
+Real, repeating pattern captured (abbreviated - the exact same cycle
+repeated roughly every 10 seconds, a new randomly-named agent each time):
+
+  12:02:21.411 INFO  NodeProvisioner#update: ci-agent-xw6c2 provisioning
+    successfully completed. We have now 2 computer(s)
+  12:02:21.495 WARNING KubernetesLauncher#launch: Error in provisioning;
+    agent=...KubernetesSlave[ci-agent-xw6c2]...
+  io.fabric8.kubernetes.client.KubernetesClientException: Failure executing:
+    POST at: https://kubernetes.default/api/v1/namespaces/jenkins/pods.
+    Message: pods "ci-agent-xw6c2" is forbidden: exceeded quota:
+    miklat-drill3-quota, requested: pods=1, used: pods=1, limited: pods=1.
+  12:02:21.501 WARNING KubernetesSlave#deleteSlavePod: Failed to delete pod
+    for agent jenkins/ci-agent-xw6c2: not found
+  12:02:21.501 INFO  KubernetesSlave#_terminate: Disconnected computer
+    ci-agent-xw6c2
+
+  ... then immediately: ci-agent-hs86w (12:02:25), ci-agent-3fsph (12:02:35),
+  ci-agent-vt4xq (12:02:45), ci-agent-52v07 (12:02:55), ci-agent-cqpkw
+  (12:03:05), ci-agent-bkc6x (12:03:15), ci-agent-26xdx (12:03:25),
+  ci-agent-7b6wm (12:03:35), ci-agent-2nrf1 (12:03:45), ci-agent-h42j2
+  (12:03:55), ci-agent-jszqc (12:04:05), ci-agent-bzx4k (12:04:15),
+  ci-agent-kfp6f (12:04:25), ci-agent-0lfj4 (12:04:35), ci-agent-wp5lw
+  (12:04:45), ci-agent-c605n (12:04:55), ci-agent-z3sp8 (12:05:05),
+  ci-agent-02pkd (12:05:15) - identical 403 "exceeded quota" every single
+  time, no other error text, no OOM, no image pull issue - the Kubernetes
+  plugin's NodeProvisioner genuinely could not create a pod for as long as
+  the quota was in place, and kept retrying on its own without giving up.
+  This is real evidence the fault worked exactly as designed, not a side
+  effect of something else.
+
+--------------------------------------------------------------------------
+4. Confirmed firing - and an honest finding not predicted in advance
+--------------------------------------------------------------------------
+
+An unpredicted-in-advance finding, documented as found: the metric that
+went positive was jenkins_queue_stuck_value, NOT jenkins_queue_blocked_value
+(which stayed 0 throughout). Before running the drill we expected "blocked"
+(no compatible executor available) to be the more likely classification;
+in practice Jenkins classified the queue item as "stuck" instead, and did
+so quickly - within roughly one minute of the build being queued (baseline
+check at stuck=0 was 1788523259s; the very next check, ~175s later at
+1788523434s, already showed stuck=1). This does not affect the alert
+(query is an OR of both), but it is a real observed detail worth keeping
+for anyone reading this later expecting "blocked" specifically.
+
+  jenkins_queue_stuck_value{job="jenkins"}   = 1   (confirmed repeatedly
+                                                     throughout the fault)
+  jenkins_queue_blocked_value{job="jenkins"} = 0   (never went positive)
+
+Prometheus rule state (after the full 10-minute `for: 600s` window):
+
+  {
+    "state": "firing",
+    "name": "JenkinsQueueStuck",
+    "query": "(jenkins_queue_stuck_value > 0) or (jenkins_queue_blocked_value > 0)",
+    "duration": 600,
+    "labels": {"category": "jenkins", "severity": "warning"},
+    "alerts": [{
+      "activeAt": "2026-09-04T12:03:29.891530268Z",
+      "state": "firing",
+      "value": "1e+00"
+    }]
+  }
+
+activeAt (12:03:29) + for (600s) = 12:13:29 - matches the Alertmanager
+payload's startsAt exactly:
+
+  Alertmanager (GET /api/v2/alerts):
+  {
+    "labels": {
+      "alertname": "JenkinsQueueStuck", "category": "jenkins",
+      "namespace": "jenkins", "job": "jenkins", "pod": "jenkins-0",
+      "severity": "warning",
+      "prometheus": "observability/kube-prometheus-stack-prometheus"
+    },
+    "startsAt": "2026-09-04T12:13:29.891Z",
+    "status": {"state": "active"},
+    "receivers": [{"name": "demo-webhook"}]
+  }
+
+--------------------------------------------------------------------------
+5. Recovery
+--------------------------------------------------------------------------
+
+  kubectl delete resourcequota miklat-drill3-quota -n jenkins
+  -> resourcequota "miklat-drill3-quota" deleted
+
+Within under two minutes, the Kubernetes plugin's next scheduled retry (the
+same NodeProvisioner loop that had been failing every ~10s throughout)
+succeeded:
+
+  kubectl get pods -n jenkins
+  -> ci-agent-hrnhz   4/4   Running   114s
+     jenkins-0         2/2   Running   19h
+
+Build #37 picked up the new agent and completed with status Success in the
+Jenkins UI - no manual restart of the build was needed, it was the same
+queued item all along.
+
+Post-recovery metrics confirmed:
+  jenkins_queue_stuck_value   = 0
+  jenkins_queue_blocked_value = 0
+
+--------------------------------------------------------------------------
+6. Confirmed resolution (not just the fix - the alert clearing itself)
+--------------------------------------------------------------------------
+
+Checked immediately after metrics hit 0: rule state was still "firing" -
+expected, not a bug: we caught it between the ~30s rule-group evaluation
+cycles, same class of harmless timing gap seen in earlier drills (just much
+shorter here, since this alert has no trailing rate() window - it's a
+direct instantaneous gauge threshold, unlike the recording-rule-based
+alerts in drills 1/2). Re-checked about a minute later:
+
+  JenkinsQueueStuck  state: "inactive"   lastEvaluation: 2026-09-04T12:20:29Z
+  GET /api/v2/alerts (Alertmanager) -> []  (empty, resolved)
+
+Full recovery confirmed end-to-end: fault injected (ResourceQuota) -> real,
+repeating, correctly-diagnosed provisioning failures in Jenkins' own log ->
+queue genuinely stuck for the required 10+ minutes -> alert fired and
+reached Alertmanager with correct labels/annotations/runbook link -> fault
+reverted -> agent provisioned within under two minutes -> queued build
+completed successfully on its own -> alert cleared on the very next
+evaluation cycle once metrics were clean. Production (shelternearyou.online)
+was never touched, and no real CPU/memory was ever consumed by the fault
+itself - only an admission-control object existed for the drill's duration.

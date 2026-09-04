@@ -1,0 +1,122 @@
+Task 5, п.8 — Failure drill 2/4: ReplicasMismatch (real, controlled fault injection).
+
+Date: 2026-09-04, cluster mbdai (k3s), namespace miklat-app.
+
+Goal: prove ReplicasMismatch (monitoring/alerts/miklat-alerts.yaml, group
+miklat.alerts.kubernetes) fires when a Deployment's available replicas stay
+below desired for 10+ minutes (a longer window than a typical rollout, by
+design), reaches Alertmanager, and clears once the pod becomes Ready again.
+
+--------------------------------------------------------------------------
+1. Fault injection and a real operational lesson along the way
+--------------------------------------------------------------------------
+
+Target: miklat-routes (single replica, standard RollingUpdate strategy).
+
+First attempt (patch readinessProbe.httpGet.path to a nonexistent path):
+
+  kubectl patch deployment miklat-routes -n miklat-app --type=json \
+    -p='[{"op":"replace","path":"/spec/template/spec/containers/0/readinessProbe/httpGet/path","value":"/definitely-not-ready"}]'
+
+This alone did NOT produce a mismatch: with replicas=1 and the default
+RollingUpdate strategy, maxUnavailable rounds down to 0 for a single
+replica, so Kubernetes created a surge pod (the new, broken one) but kept
+the OLD healthy pod running and Ready until the new one passed its
+readiness check - which it never would. Result: 2 pods, deployment still
+shows AVAILABLE 1/1, no mismatch visible. Confirmed by:
+
+  kubectl get pods -n miklat-app -l app=miklat-routes -o wide
+  -> miklat-routes-686644fcbb-mczds   0/1   Running   4s   (new, broken)
+     miklat-routes-76c5fc9bc8-gvffw   1/1   Running   18h  (old, healthy)
+
+Second attempt: manually deleted the old pod to force it out
+(`kubectl delete pod miklat-routes-76c5fc9bc8-gvffw`). This ALSO did not
+work as intended - the ReplicaSet controller (which reconciles independently
+of the Deployment's own rollout pacing) immediately recreated a replacement
+pod under the SAME old ReplicaSet, using the still-healthy template:
+
+  miklat-routes-686644fcbb-mczds   0/1   Running   55s  (broken, unchanged)
+  miklat-routes-76c5fc9bc8-czfjd   0/1   Running   6s   (old template, about to become Ready)
+
+This new old-template pod would have become Ready within ~10-15s (its
+readinessProbe was never broken), erasing the mismatch again.
+
+Real fix: explicitly scale the OLD ReplicaSet itself to 0 (not delete a pod
+under it) - `kubectl scale rs miklat-routes-76c5fc9bc8 -n miklat-app --replicas=0`.
+By the time this command ran, the Deployment controller had already reached
+the same conclusion on its own and scaled the old RS to 0 (`kubectl get rs`
+showed DESIRED 0, CURRENT 0 for it already) - so the explicit scale command
+was a redundant no-op, but the resulting state was exactly right:
+
+  NAME                             READY   STATUS    AGE
+  miklat-routes-686644fcbb-mczds   0/1     Running   8m54s   (only pod left)
+
+  kubectl get deployment miklat-routes -n miklat-app
+  -> READY 0/1   AVAILABLE 0
+
+This sustained indefinitely (broken readinessProbe, but a healthy
+livenessProbe, so no restart loop) - a clean, single stuck-NotReady pod.
+
+--------------------------------------------------------------------------
+2. Confirmed firing (10-minute `for` window - longer than drill 1)
+--------------------------------------------------------------------------
+
+After a 10-minute wait, the alert transitioned to firing:
+
+  Prometheus rule state:
+  {
+      "state": "firing",
+      "name": "ReplicasMismatch",
+      "query": "kube_deployment_status_replicas_available{namespace=~\"miklat-app|jenkins|observability\"} < kube_deployment_spec_replicas{namespace=~\"miklat-app|jenkins|observability\"}",
+      "duration": 600,
+      "labels": {"category": "kubernetes", "severity": "warning"}
+  }
+
+  Alertmanager (GET /api/v2/alerts):
+  alertname=ReplicasMismatch, category=kubernetes, deployment=miklat-routes,
+  namespace=miklat-app, severity=warning,
+  prometheus=observability/kube-prometheus-stack-prometheus
+
+Open item, honestly noted rather than assumed: we did not capture the raw
+`kube_deployment_status_replicas_available`/`up{job="miklat-routes"}` values
+DURING the fault window itself - by the time the (corrected, URL-encoded)
+queries were run, an accidental double-run of the revert command had already
+restored the pod to healthy, so those specific queries only show the
+post-recovery values (available=1, up=1). The alert's own firing state and
+the Alertmanager payload above are the confirmed evidence that the fault was
+real and sustained for the required 10 minutes; the raw available=0 metric
+value during the fault was seen live in the terminal (`kubectl get
+deployment` showing `READY 0/1 AVAILABLE 0`) but not re-queried through
+Prometheus before the revert.
+
+--------------------------------------------------------------------------
+3. Recovery
+--------------------------------------------------------------------------
+
+Command: kubectl patch deployment miklat-routes -n miklat-app --type=json
+-p='[{"op":"replace","path":".../readinessProbe/httpGet/path","value":"/ready"}]'
+
+A real k8s behavior worth recording: since this patch made the pod template
+match the OLD (previously scaled-to-0) ReplicaSet's template exactly, the
+Deployment controller reused that existing ReplicaSet (scaling it back up)
+instead of creating a brand new one - a new pod
+(miklat-routes-76c5fc9bc8-hr4tq) came up healthy in ~12s. The broken pod
+(mczds) transitioned to Completed (clean container exit on SIGTERM during
+scale-down) and was garbage-collected shortly after.
+
+Post-recovery confirmed:
+  kube_deployment_status_replicas_available{namespace="miklat-app",deployment="miklat-routes"} = 1
+  kube_deployment_spec_replicas{namespace="miklat-app",deployment="miklat-routes"} = 1
+  up{job="miklat-routes",pod="miklat-routes-76c5fc9bc8-hr4tq"} = 1
+
+--------------------------------------------------------------------------
+4. Confirmed resolution
+--------------------------------------------------------------------------
+
+10 minutes after recovery:
+  alert rule state: "inactive"
+  GET /api/v2/alerts (Alertmanager) -> empty (resolved)
+  kubectl get pods -n miklat-app -l app=miklat-routes -> single pod, 1/1 Running
+
+Production (shelternearyou.online) was never touched - only miklat-routes'
+own readinessProbe path, within namespace miklat-app.

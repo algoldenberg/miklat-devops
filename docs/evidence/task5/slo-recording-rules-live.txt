@@ -1,0 +1,23 @@
+Task 5, п.5 — SLO recording rules: live confirmation on Prometheus.
+
+Command: curl -s 'http://localhost:9090/api/v1/rules?type=record' (via
+kubectl port-forward -n observability svc/kube-prometheus-stack-prometheus
+9090:9090), run on mbdai, 2026-09-04.
+
+Confirms both recording-rule groups from monitoring/slo-recording-rules.yaml
+are loaded and evaluating cleanly (health: "ok" on every rule, 30s interval,
+loaded from file
+.../observability-miklat-slo-recording-rules-d3daad40-0966-4bf1-9f3f-5214b098dd40.yaml):
+
+- group "miklat.slo.availability" (5 rules): job:http_requests:rate5m,
+  job:http_requests_errors:rate5m (with the OR-zero fallback for jobs with
+  no errors), job:http_requests_errors:ratio5m,
+  job:http_request_availability:ratio5m, job:http_request_availability_slo:met
+  (>= bool 0.98).
+- group "miklat.slo.latency" (4 rules): job:http_request_duration_highr_seconds:p50_5m/
+  p95_5m/p99_5m (histogram_quantile over http_request_duration_highr_seconds_bucket),
+  job:http_request_latency_slo:met (< bool 0.4).
+
+Raw JSON response:
+
+{"status":"success","data":{"groups":[{"name":"miklat.slo.availability","file":"/etc/prometheus/rules/prometheus-kube-prometheus-stack-prometheus-rulefiles-0/observability-miklat-slo-recording-rules-d3daad40-0966-4bf1-9f3f-5214b098dd40.yaml","rules":[{"name":"job:http_requests:rate5m","query":"sum by (job) (rate(http_requests_total[5m]))","labels":{},"health":"ok","evaluationTime":0.000500088,"lastEvaluation":"2026-09-04T10:01:35.975996898Z","type":"recording"},{"name":"job:http_requests_errors:rate5m","query":"(sum by (job) (rate(http_requests_total{status=\"5xx\"}[5m])) or (0 * job:http_requests:rate5m))","labels":{},"health":"ok","evaluationTime":0.000159016,"lastEvaluation":"2026-09-04T10:01:35.976504476Z","type":"recording"},{"name":"job:http_requests_errors:ratio5m","query":"job:http_requests_errors:rate5m / job:http_requests:rate5m","labels":{},"health":"ok","evaluationTime":0.000155551,"lastEvaluation":"2026-09-04T10:01:35.976667698Z","type":"recording"},{"name":"job:http_request_availability:ratio5m","query":"1 - job:http_requests_errors:ratio5m","labels":{},"health":"ok","evaluationTime":0.000077133,"lastEvaluation":"2026-09-04T10:01:35.97683177Z","type":"recording"},{"name":"job:http_request_availability_slo:met","query":"job:http_request_availability:ratio5m >= bool 0.98","labels":{},"health":"ok","evaluationTime":0.000083014,"lastEvaluation":"2026-09-04T10:01:35.976911458Z","type":"recording"}],"interval":30,"limit":0,"evaluationTime":0.00104891,"lastEvaluation":"2026-09-04T10:01:35.975948437Z"},{"name":"miklat.slo.latency","file":"/etc/prometheus/rules/prometheus-kube-prometheus-stack-prometheus-rulefiles-0/observability-miklat-slo-recording-rules-d3daad40-0966-4bf1-9f3f-5214b098dd40.yaml","rules":[{"name":"job:http_request_duration_highr_seconds:p50_5m","query":"histogram_quantile(0.5, sum by (le, job) (rate(http_request_duration_highr_seconds_bucket[5m])))","labels":{},"health":"ok","evaluationTime":0.001308585,"lastEvaluation":"2026-09-04T10:01:35.710757136Z","type":"recording"},{"name":"job:http_request_duration_highr_seconds:p95_5m","query":"histogram_quantile(0.95, sum by (le, job) (rate(http_request_duration_highr_seconds_bucket[5m])))","labels":{},"health":"ok","evaluationTime":0.000962919,"lastEvaluation":"2026-09-04T10:01:35.712075273Z","type":"recording"},{"name":"job:http_request_duration_highr_seconds:p99_5m","query":"histogram_quantile(0.99, sum by (le, job) (rate(http_request_duration_highr_seconds_bucket[5m])))","labels":{},"health":"ok","evaluationTime":0.000918643,"lastEvaluation":"2026-09-04T10:01:35.713044425Z","type":"recording"},{"name":"job:http_request_latency_slo:met","query":"job:http_request_duration_highr_seconds:p95_5m < bool 0.4","labels":{},"health":"ok","evaluationTime":0.000104996,"lastEvaluation":"2026-09-04T10:01:35.713968889Z","type":"recording"}],"interval":30,"limit":0,"evaluationTime":0.003396914,"lastEvaluation":"2026-09-04T10:01:35.710680311Z"}]}}
