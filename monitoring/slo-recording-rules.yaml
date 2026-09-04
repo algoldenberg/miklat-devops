@@ -1,0 +1,58 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: miklat-slo-recording-rules
+  namespace: observability
+  # Ни один специальный лейбл не требуется: values-kube-prometheus-stack.yaml
+  # выставляет ruleSelectorNilUsesHelmValues: false и ruleNamespaceSelector: {},
+  # поэтому Prometheus Operator подхватывает PrometheusRule из ЛЮБОГО namespace
+  # без селектора по лейблам (реально подтверждено чтением значений чарта,
+  # тот же принцип, что уже работает для ServiceMonitor).
+spec:
+  groups:
+    # --- Availability SLI/SLO ---
+    # SLO: 98% успешных (не-5xx) ответов в скользящем окне 5 минут, по каждому сервису.
+    # Порог 98% выбран не произвольно: реальный текущий error rate по всем 6
+    # backend-сервисам miklat-app — 0% (проверено напрямую: sum(rate(http_requests_total{status="5xx"}[30m]))
+    # вернул ПУСТОЙ результат, т.е. ни одной ошибки за 30 минут). 98% — разумный
+    # промышленный порог с запасом на редкую нагрузку/тупняки, при этом не
+    # тривиально всегда проходящий.
+    - name: miklat.slo.availability
+      rules:
+        - record: job:http_requests:rate5m
+          expr: sum(rate(http_requests_total[5m])) by (job)
+        - record: job:http_requests_errors:rate5m
+          # OR-заглушка обязательна: реально подтверждено, что при 0 ошибках
+          # sum(rate(http_requests_total{status="5xx"}[5m])) возвращает ПУСТУЮ
+          # серию (не 0!), поэтому job без единой ошибки просто исчез бы из
+          # ratio/availability вместо того, чтобы честно показать 100%.
+          expr: (sum(rate(http_requests_total{status="5xx"}[5m])) by (job) or (0 * job:http_requests:rate5m))
+        - record: job:http_requests_errors:ratio5m
+          expr: job:http_requests_errors:rate5m / job:http_requests:rate5m
+        - record: job:http_request_availability:ratio5m
+          expr: 1 - job:http_requests_errors:ratio5m
+        - record: job:http_request_availability_slo:met
+          # 1 = SLO соблюдён (>=98%), 0 = нарушен. Используется как готовый
+          # источник и для панели дашборда, и для будущего алерта HighErrorRate (п.6) —
+          # одна и та же recording rule, а не две отдельные формулы.
+          expr: job:http_request_availability:ratio5m >= bool 0.98
+
+    # --- Latency SLI/SLO ---
+    # SLO: p95 latency < 400ms по каждому сервису, скользящее окно 5 минут.
+    # Порог выбран по реальным данным: текущий p95 (highr-гистограмма, 30м окно)
+    # 22-25мс у большинства сервисов, до ~98мс у miklat-photos/miklat-service
+    # (закономерно тяжелее — загрузка фото и бизнес-логика заявок). 400мс даёт
+    # ~4x запас над текущим пиком, чтобы не ловить обычные колебания, но
+    # реально ловить деградацию.
+    - name: miklat.slo.latency
+      rules:
+        - record: job:http_request_duration_highr_seconds:p50_5m
+          expr: histogram_quantile(0.5, sum(rate(http_request_duration_highr_seconds_bucket[5m])) by (le, job))
+        - record: job:http_request_duration_highr_seconds:p95_5m
+          expr: histogram_quantile(0.95, sum(rate(http_request_duration_highr_seconds_bucket[5m])) by (le, job))
+        - record: job:http_request_duration_highr_seconds:p99_5m
+          expr: histogram_quantile(0.99, sum(rate(http_request_duration_highr_seconds_bucket[5m])) by (le, job))
+        - record: job:http_request_latency_slo:met
+          # 1 = SLO соблюдён (p95 < 400мс), 0 = нарушен. Тот же принцип: единая
+          # recording rule для панели дашборда и для будущего алерта HighLatencyP95 (п.6).
+          expr: job:http_request_duration_highr_seconds:p95_5m < bool 0.4
