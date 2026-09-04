@@ -51,3 +51,6 @@ jenkins/**/credentials.xml
 .DS_Store
 .idea/
 .vscode/
+
+# OSRM routing dataset (regenerated locally via osrm-extract/partition/customize, Фаза 1 шаг 4)
+data/
