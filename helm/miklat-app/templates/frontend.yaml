@@ -55,6 +55,34 @@ spec:
             allowPrivilegeEscalation: false
             capabilities:
               drop: ["ALL"]
+        - name: nginx-exporter
+          # Задание 5, метрики фронтенда: читает stub_status (frontend/nginx.conf,
+          # /nginx_status, только 127.0.0.1 — тот же под, sidecar) и отдаёт
+          # /metrics в формате Prometheus. Версия зафиксирована (не latest).
+          image: "nginx/nginx-prometheus-exporter:1.5.1"
+          imagePullPolicy: IfNotPresent
+          args:
+            - "--nginx.scrape-uri=http://127.0.0.1:8080/nginx_status"
+          ports:
+            - name: metrics
+              containerPort: 9113
+          resources:
+            requests:
+              cpu: "10m"
+              memory: "16Mi"
+            limits:
+              cpu: "50m"
+              memory: "32Mi"
+          readinessProbe:
+            httpGet:
+              path: /metrics
+              port: 9113
+            initialDelaySeconds: 3
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
 ---
 apiVersion: v1
 kind: Service
@@ -68,5 +96,9 @@ spec:
   selector:
     app: frontend
   ports:
-    - port: 8080
+    - name: http
+      port: 8080
       targetPort: 8080
+    - name: metrics
+      port: 9113
+      targetPort: 9113

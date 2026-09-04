@@ -1,9 +1,10 @@
-# ServiceMonitor'ы для всех 6 инструментированных backend-сервисов
-# приложения miklat (Задание 5, п.1 — "ServiceMonitor или PodMonitor на
-# каждый сервис приложения"). Живут в том же namespace, что и Service'ы,
-# которые описывают (miklat-app) — по умолчанию (без namespaceSelector)
-# ServiceMonitor ищет Endpoints в СВОЁМ собственном namespace, поэтому
-# отдельный namespaceSelector не нужен.
+# ServiceMonitor'ы для приложения miklat (Задание 5, п.1 — "ServiceMonitor
+# или PodMonitor на каждый сервис приложения"): 6 инструментированных
+# backend-сервисов + frontend (метрики фронтенда, Задание 5, добавлено
+# после основного объёма Фазы 5 — см. miklat-progress.md). Живут в том же
+# namespace, что и Service'ы, которые описывают (miklat-app) — по
+# умолчанию (без namespaceSelector) ServiceMonitor ищет Endpoints в СВОЁМ
+# собственном namespace, поэтому отдельный namespaceSelector не нужен.
 #
 # Prometheus (namespace observability) видит эти объекты благодаря
 # monitoring/values-kube-prometheus-stack.yaml, где
@@ -11,10 +12,13 @@
 # serviceMonitorNamespaceSelector: {} — то есть Prometheus discovery
 # включён на ВСЕ namespace, а не только на тот, где установлен сам чарт.
 #
-# targetPort: 8000 — все 6 сервисов слушают на этом порту (см.
+# targetPort: 8000 — все 6 backend-сервисов слушают на этом порту (см.
 # helm/miklat-app/templates/*.yaml, containerPort: 8000); используем номер
-# порта, а не имя, т.к. Service-манифесты сейчас не именуют свои порты —
+# порта, а не имя, т.к. их Service-манифесты не именуют свои порты —
 # trade-off, чтобы не трогать существующие Service-объекты лишний раз.
+# У frontend (в самом низу файла) — наоборот, именованный порт (`port:
+# metrics`), т.к. его Service отдаёт два порта (http/metrics) и обязан их
+# именовать.
 #
 # path: /metrics — не публикуется через Ingress (см.
 # helm/miklat-app/templates/ingress.yaml — там путь `/` ведёт только на
@@ -112,5 +116,25 @@ spec:
       app: miklat-walking-routes
   endpoints:
     - targetPort: 8000
+      path: /metrics
+      interval: 15s
+---
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: frontend
+  namespace: miklat-app
+  labels:
+    app.kubernetes.io/part-of: miklat
+spec:
+  selector:
+    matchLabels:
+      app: frontend
+  endpoints:
+    # port (не targetPort, в отличие от ServiceMonitor'ов backend-сервисов
+    # выше) — Service frontend единственный именует свои порты (http/metrics,
+    # т.к. их два в одном Service), поэтому здесь корректнее сослаться на имя
+    # порта, а не дублировать номер 9113.
+    - port: metrics
       path: /metrics
       interval: 15s
