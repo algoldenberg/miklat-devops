@@ -1,0 +1,113 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: miklat-alerts
+  namespace: observability
+  # Без специальных лейблов на манифесте: ruleSelectorNilUsesHelmValues: false
+  # и ruleNamespaceSelector: {} в monitoring/values-kube-prometheus-stack.yaml —
+  # Prometheus Operator подхватывает PrometheusRule из любого namespace без
+  # селектора по лейблам (реально подтверждено, тот же принцип, что и для
+  # monitoring/slo-recording-rules.yaml).
+spec:
+  groups:
+    # --- Приложение (2 алерта) ---
+    - name: miklat.alerts.application
+      rules:
+        - alert: HighErrorRate
+          expr: job:http_request_availability:ratio5m < 0.98
+          for: 5m
+          labels:
+            severity: critical
+            category: application
+          annotations:
+            summary: "Высокий error rate на сервисе {{ $labels.job }}"
+            description: >-
+              Availability сервиса {{ $labels.job }} — {{ $value | humanizePercentage }},
+              ниже SLO 98% на протяжении 5+ минут (recording rule job:http_request_availability:ratio5m,
+              monitoring/slo-recording-rules.yaml).
+            runbook_url: "https://github.com/algoldenberg/miklat-devops/blob/main/runbooks/high-error-rate.md"
+
+        - alert: HighLatencyP95
+          expr: job:http_request_duration_highr_seconds:p95_5m > 0.4
+          for: 5m
+          labels:
+            severity: warning
+            category: application
+          annotations:
+            summary: "Высокая p95 latency на сервисе {{ $labels.job }}"
+            description: >-
+              p95 latency сервиса {{ $labels.job }} — {{ $value | humanizeDuration }},
+              выше SLO 400мс на протяжении 5+ минут (recording rule
+              job:http_request_duration_highr_seconds:p95_5m, monitoring/slo-recording-rules.yaml).
+            runbook_url: "https://github.com/algoldenberg/miklat-devops/blob/main/runbooks/high-latency-p95.md"
+
+    # --- Kubernetes (2 алерта) ---
+    - name: miklat.alerts.kubernetes
+      rules:
+        - alert: ReplicasMismatch
+          expr: kube_deployment_status_replicas_available{namespace=~"miklat-app|jenkins|observability"} < kube_deployment_spec_replicas{namespace=~"miklat-app|jenkins|observability"}
+          for: 10m
+          labels:
+            severity: warning
+            category: kubernetes
+          annotations:
+            summary: "Deployment {{ $labels.deployment }} не набрал нужное число реплик"
+            description: >-
+              Deployment {{ $labels.deployment }} в namespace {{ $labels.namespace }} имеет
+              {{ $value }} доступных реплик меньше желаемого на протяжении 10+ минут
+              (окно намеренно шире, чем типичный rollout, чтобы не ловить нормальный деплой).
+            runbook_url: "https://github.com/algoldenberg/miklat-devops/blob/main/runbooks/replicas-mismatch.md"
+
+        - alert: NodeNotReadyOrPressure
+          expr: (kube_node_status_condition{condition="Ready",status="true"} == 0) or (kube_node_status_condition{condition=~"MemoryPressure|DiskPressure|PIDPressure",status="true"} == 1)
+          for: 5m
+          labels:
+            severity: critical
+            category: kubernetes
+          annotations:
+            summary: "Нода {{ $labels.node }} не Ready или под ресурсным давлением"
+            description: >-
+              Нода {{ $labels.node }} не в статусе Ready, либо в состоянии MemoryPressure/
+              DiskPressure/PIDPressure, на протяжении 5+ минут. Single-node кластер (mbdai) —
+              это затрагивает всю платформу целиком, включая продакшн shelternearyou.online.
+            runbook_url: "https://github.com/algoldenberg/miklat-devops/blob/main/runbooks/node-not-ready-or-pressure.md"
+
+    # --- Jenkins (1 алерт) ---
+    - name: miklat.alerts.jenkins
+      rules:
+        - alert: JenkinsQueueStuck
+          expr: (jenkins_queue_stuck_value > 0) or (jenkins_queue_blocked_value > 0)
+          for: 10m
+          labels:
+            severity: warning
+            category: jenkins
+          annotations:
+            summary: "Очередь сборок Jenkins застряла или заблокирована"
+            description: >-
+              jenkins_queue_stuck_value или jenkins_queue_blocked_value > 0 на протяжении
+              10+ минут — CI/CD pipeline, вероятно, не может обработать новые билды
+              (нехватка executor'ов/агентов, зависший динамический pod-агент).
+            runbook_url: "https://github.com/algoldenberg/miklat-devops/blob/main/runbooks/jenkins-queue-stuck.md"
+
+    # --- Мониторинг (1 алерт) ---
+    - name: miklat.alerts.monitoring
+      rules:
+        - alert: PrometheusTargetDown
+          # Область сознательно ограничена компонентами, которые реально принадлежат
+          # этому проекту (6 backend-сервисов, Jenkins, сам стек мониторинга) — не
+          # включает apiserver/coredns/kubelet (базовая инфраструктура k8s, вне
+          # владения проекта). Реальные имена job подтверждены прямым запросом к
+          # /api/v1/query?query=up (не угаданы): компоненты kube-prometheus-stack
+          # называются с полным префиксом релиза (kube-prometheus-stack-prometheus и т.д.),
+          # а не просто "prometheus"/"grafana".
+          expr: up{job=~"miklat-.*|jenkins|kube-prometheus-stack-prometheus|kube-prometheus-stack-grafana|kube-prometheus-stack-alertmanager|kube-prometheus-stack-operator|kube-state-metrics|node-exporter"} == 0
+          for: 5m
+          labels:
+            severity: critical
+            category: monitoring
+          annotations:
+            summary: "Target {{ $labels.job }} недоступен для scrape"
+            description: >-
+              Prometheus не может собрать метрики с {{ $labels.job }} ({{ $labels.instance }})
+              на протяжении 5+ минут — слепая зона мониторинга на этом компоненте.
+            runbook_url: "https://github.com/algoldenberg/miklat-devops/blob/main/runbooks/prometheus-target-down.md"
