@@ -295,3 +295,23 @@ spec:
           port: 8000
         - protocol: TCP
           port: 8080
+    # ДОБАВЛЕНО 04.09.2026 (Фаза 5, п.7 — CD post-deploy monitoring health-gate):
+    # новая стадия Jenkinsfile-cd опрашивает Prometheus API напрямую из
+    # cd-agent, чтобы проверить targets UP и SLO (error rate/latency) ПЕРЕД
+    # тем, как считать деплой успешным. Без этого правила запрос молча
+    # зависал бы до таймаута — тот же класс инцидента, что уже дважды был в
+    # проекте (JNLP-порт Jenkins в Фазе 4, scrape-порт Jenkins в Фазе 5).
+    # Реальный Service подтверждён: kube-prometheus-stack-prometheus.observability,
+    # порт 9090 (kubectl get svc -n observability). Симметричное ingress-правило
+    # со стороны Prometheus — в monitoring/network-policy.yaml
+    # (allow-prometheus-ingress).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: observability
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9090

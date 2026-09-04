@@ -198,6 +198,84 @@ pipeline {
                 }
             }
         }
+
+        stage('Monitoring health gate') {
+            // Фаза 5, Задание 5, п.7: пост-деплой health-gate через Prometheus
+            // API — Smoke test выше проверяет только "ответил ли под вообще
+            // прямо сейчас", а это дополнительно проверяет: (1) реально ли
+            // Prometheus скрейпит новый под (up), (2) не хуже ли SLO
+            // availability/latency (recording rules из monitoring/slo-recording-rules.yaml,
+            // Фаза 5 п.5 — та же формула, что и в дашборде/алертах, не
+            // дублируется). Frontend сознательно исключён — метрики фронтенда
+            // ещё не реализованы (осознанно отложены на конец Фазы 5).
+            //
+            // NetworkPolicy: без явного разрешения cd-agent -> Prometheus:9090
+            // запрос ниже молча зависал бы до таймаута — тот же класс
+            // инцидента, что уже дважды был в проекте (JNLP-порт Jenkins в
+            // Фазе 4, scrape-порт Jenkins в Фазе 5). Разрешено симметрично:
+            // jenkins/network-policy.yaml (allow-cd-agent-egress, egress к
+            // observability:9090) и monitoring/network-policy.yaml
+            // (allow-prometheus-ingress, ingress от jenkins/cd-agent).
+            when {
+                expression { return params.SERVICE_NAME != 'frontend' }
+            }
+            steps {
+                container('kubectl-helm') {
+                    script {
+                        def promUrl = 'http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090'
+                        def job = params.SERVICE_NAME
+
+                        // Пауза перед проверкой: ServiceMonitor приложения
+                        // скрейпит с interval: 15s (monitoring/service-monitors/
+                        // miklat-app-services.yaml) — 30с гарантируют минимум
+                        // 1-2 реальных цикла scrape нового пода, без паузы
+                        // `up` мог бы всё ещё отражать состояние ДО деплоя.
+                        sh 'sleep 30'
+
+                        def upValue = sh(
+                            script: "curl -s '${promUrl}/api/v1/query' --data-urlencode 'query=up{job=\"${job}\"}' | jq -r '.data.result[0].value[1] // \"NODATA\"'",
+                            returnStdout: true
+                        ).trim()
+                        echo "Health-gate: up{job=\"${job}\"} = ${upValue}"
+                        if (upValue != '1') {
+                            error("Health-gate провалился: Prometheus target job=\"${job}\" не UP (значение: ${upValue}). См. runbooks/prometheus-target-down.md.")
+                        }
+
+                        def availability = sh(
+                            script: "curl -s '${promUrl}/api/v1/query' --data-urlencode 'query=job:http_request_availability:ratio5m{job=\"${job}\"}' | jq -r '.data.result[0].value[1] // \"NODATA\"'",
+                            returnStdout: true
+                        ).trim()
+                        echo "Health-gate: availability (recording rule, окно 5м) для ${job} = ${availability}"
+                        if (availability == 'NODATA') {
+                            echo "ВНИМАНИЕ: нет данных по availability recording rule (недостаточно трафика за окно) — проверка SLO по availability пропущена для этого прогона."
+                        } else if (availability.toFloat() < 0.98) {
+                            // Примечание: окно 5м recording rule может ещё
+                            // частично содержать трафик ДО деплоя (см.
+                            // monitoring/slo-queries.md) — сразу после релиза
+                            // возможна кратковременная задержка полного
+                            // отражения нового состояния. Smoke test выше уже
+                            // покрывает мгновенную проверку "под живой прямо
+                            // сейчас"; эта проверка — дополнительный
+                            // agregate-SLO-гейт поверх неё, не замена.
+                            error("Health-gate провалился: availability ${job} = ${availability} (порог SLO — 98%, monitoring/slo-queries.md). См. runbooks/high-error-rate.md.")
+                        }
+
+                        def p95 = sh(
+                            script: "curl -s '${promUrl}/api/v1/query' --data-urlencode 'query=job:http_request_duration_highr_seconds:p95_5m{job=\"${job}\"}' | jq -r '.data.result[0].value[1] // \"NODATA\"'",
+                            returnStdout: true
+                        ).trim()
+                        echo "Health-gate: p95 latency (recording rule, окно 5м) для ${job} = ${p95}s"
+                        if (p95 == 'NODATA') {
+                            echo "ВНИМАНИЕ: нет данных по latency recording rule — проверка SLO по latency пропущена для этого прогона."
+                        } else if (p95.toFloat() >= 0.4) {
+                            error("Health-gate провалился: p95 latency ${job} = ${p95}s (порог SLO — 400мс, monitoring/slo-queries.md). См. runbooks/high-latency-p95.md.")
+                        }
+
+                        echo "Health-gate пройден: ${job} — Prometheus target UP, availability >= 98%, p95 < 400ms."
+                    }
+                }
+            }
+        }
     }
 
     post {

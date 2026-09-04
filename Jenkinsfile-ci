@@ -65,6 +65,25 @@ pipeline {
             }
         }
 
+        stage('Validate monitoring manifests') {
+            // Фаза 5, Задание 5, п.7: статическая валидация синтаксиса/схемы
+            // PrometheusRule, ServiceMonitor/PodMonitor и JSON-дашбордов
+            // Grafana (внутри ConfigMap). НЕ деплоит дашборды/правила в
+            // кластер — это только gate ДО того, как манифест попадёт в git
+            // history как валидный (сам деплой — только через `kubectl apply`
+            // вручную/на сервере, см. monitoring/*, план п.9 "Observability
+            // as Code": ничего не создаётся вручную через UI, но CI и не
+            // деплоит сам — этим по-прежнему занимается человек по шагам).
+            steps {
+                container('python-tools') {
+                    sh '''
+                        pip install --quiet --no-cache-dir pyyaml==6.0.3
+                        python3 ci/validate_monitoring.py
+                    '''
+                }
+            }
+        }
+
         stage('Lint') {
             parallel {
                 stage('Python') {
