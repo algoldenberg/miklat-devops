@@ -6,3 +6,5 @@ pydantic==2.9.2
 # Задание 5: /metrics + app_info + бизнес-метрики
 prometheus-fastapi-instrumentator==7.1.0
 prometheus-client==0.26.0
+# Задание 5, п.8, drill 4 — принудительная инвалидация отравленного кэш-слоя
+# kaniko для `RUN pip install` (старый слой не содержал рабочего uvicorn).
