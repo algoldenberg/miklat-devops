@@ -1,0 +1,244 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-dashboard-kubernetes-cluster
+  namespace: observability
+  labels:
+    grafana_dashboard: "1"
+data:
+  kubernetes-cluster.json: |
+    {
+      "uid": "miklat-kubernetes-cluster",
+      "title": "Kubernetes / Cluster",
+      "tags": ["miklat", "kubernetes", "task5"],
+      "timezone": "browser",
+      "schemaVersion": 39,
+      "version": 1,
+      "refresh": "30s",
+      "time": { "from": "now-1h", "to": "now" },
+      "templating": {
+        "list": [
+          {
+            "name": "namespace",
+            "type": "query",
+            "datasource": { "type": "prometheus", "uid": "prometheus" },
+            "query": "label_values(kube_pod_info, namespace)",
+            "multi": true,
+            "includeAll": true,
+            "current": {
+              "selected": true,
+              "text": ["miklat-app", "jenkins", "observability"],
+              "value": ["miklat-app", "jenkins", "observability"]
+            },
+            "refresh": 2,
+            "sort": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "stat",
+          "title": "Node Ready",
+          "description": "kube_node_status_condition{condition=\"Ready\",status=\"true\"} — реальное состояние ноды k3s (mbdai). Отвечает на вопрос: жива ли сама платформа?",
+          "gridPos": { "x": 0, "y": 0, "w": 6, "h": 6 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "mappings": [
+                { "type": "value", "options": { "1": { "text": "Ready" }, "0": { "text": "NOT READY" } } }
+              ],
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "red", "value": null },
+                  { "color": "green", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "kube_node_status_condition{condition=\"Ready\",status=\"true\"}", "legendFormat": "{{node}}" }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Pending pods",
+          "description": "Поды в фазе Pending по выбранным namespace — не могут запуститься (нехватка ресурсов, ошибка scheduler'а и т.п.).",
+          "gridPos": { "x": 6, "y": 0, "w": 6, "h": 6 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "sum(kube_pod_status_phase{namespace=~\"$namespace\",phase=\"Pending\"} or vector(0))" }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "OOMKilled events (last terminated)",
+          "description": "kube_pod_container_status_last_terminated_reason{reason=\"OOMKilled\"} — контейнеры, чей последний перезапуск был из-за нехватки памяти.",
+          "gridPos": { "x": 12, "y": 0, "w": 6, "h": 6 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "red", "value": 1 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            { "expr": "sum(kube_pod_container_status_last_terminated_reason{namespace=~\"$namespace\",reason=\"OOMKilled\"} or vector(0))" }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Disk usage (root, node mbdai)",
+          "description": "node_filesystem_avail_bytes / size_bytes на mountpoint \"/\" (ext4) — единственный диск single-node сервера mbdai, разделяемый с продом shelternearyou.online.",
+          "gridPos": { "x": 18, "y": 0, "w": 6, "h": 6 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percent",
+              "max": 100,
+              "min": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  { "color": "green", "value": null },
+                  { "color": "yellow", "value": 70 },
+                  { "color": "red", "value": 90 }
+                ]
+              }
+            },
+            "overrides": []
+          },
+          "targets": [
+            {
+              "expr": "100 * (1 - (node_filesystem_avail_bytes{mountpoint=\"/\",fstype=\"ext4\"} / node_filesystem_size_bytes{mountpoint=\"/\",fstype=\"ext4\"}))"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "timeseries",
+          "title": "Node CPU usage",
+          "description": "100 * (1 - idle rate) — единственная нода mbdai (single-node k3s, разделяется с продом shelternearyou.online).",
+          "gridPos": { "x": 0, "y": 6, "w": 8, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+          "targets": [
+            { "expr": "100 * (1 - avg by (instance) (rate(node_cpu_seconds_total{mode=\"idle\"}[5m])))", "legendFormat": "CPU %" }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "timeseries",
+          "title": "Node memory usage",
+          "description": "1 - MemAvailable/MemTotal, в процентах.",
+          "gridPos": { "x": 8, "y": 6, "w": 8, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+          "targets": [
+            { "expr": "100 * (1 - (node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes))", "legendFormat": "Memory %" }
+          ]
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "CPU throttling by pod",
+          "description": "rate(container_cpu_cfs_throttled_periods_total{container!=\"\"}[5m]) — container!=\"\" исключает дублирующую pod-агрегатную строку cAdvisor (реально подтверждено: у каждого пода есть 'пустая' строка вдобавок к строке по контейнеру). Отвечает на вопрос: сервису не хватает выделенного CPU limit'а?",
+          "gridPos": { "x": 16, "y": 6, "w": 8, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "sum(rate(container_cpu_cfs_throttled_periods_total{namespace=~\"$namespace\",container!=\"\"}[5m])) by (namespace, pod)",
+              "legendFormat": "{{namespace}}/{{pod}}"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Pods by phase",
+          "description": "sum(kube_pod_status_phase) by (namespace, phase) — сколько подов в каждой фазе по выбранным namespace. Отвечает на вопрос: что-то не запускается или падает прямо сейчас?",
+          "gridPos": { "x": 0, "y": 14, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "sum(kube_pod_status_phase{namespace=~\"$namespace\"}) by (namespace, phase)",
+              "legendFormat": "{{namespace}} {{phase}}"
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "type": "timeseries",
+          "title": "Pod restarts (1h increase)",
+          "description": "increase(kube_pod_container_status_restarts_total[1h]) by (namespace,pod) — реальные перезапуски контейнеров, не просто текущий счётчик. Отвечает на вопрос: какой-то под циклически падает?",
+          "gridPos": { "x": 12, "y": 14, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "sum(increase(kube_pod_container_status_restarts_total{namespace=~\"$namespace\"}[1h])) by (namespace, pod)",
+              "legendFormat": "{{namespace}}/{{pod}}"
+            }
+          ]
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Deployment replicas: desired vs available",
+          "description": "kube_deployment_spec_replicas против kube_deployment_status_replicas_available — расхождение = реальная проблема с раскаткой/health checks (та же идея, что у будущего алерта ReplicasMismatch).",
+          "gridPos": { "x": 0, "y": 22, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "kube_deployment_spec_replicas{namespace=~\"$namespace\"}",
+              "legendFormat": "{{deployment}} desired"
+            },
+            {
+              "expr": "kube_deployment_status_replicas_available{namespace=~\"$namespace\"}",
+              "legendFormat": "{{deployment}} available"
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "type": "timeseries",
+          "title": "PVC usage",
+          "description": "1 - available/capacity по каждому PVC. job=\"kubelet\" — реально подтверждено, что тот же PVC также приходит вторым дублирующим таргетом через job=\"apiserver\" (federation), фильтр исключает задвоение.",
+          "gridPos": { "x": 12, "y": 22, "w": 12, "h": 8 },
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "fieldConfig": { "defaults": { "unit": "percent", "min": 0, "max": 100 }, "overrides": [] },
+          "targets": [
+            {
+              "expr": "100 * (1 - (kubelet_volume_stats_available_bytes{job=\"kubelet\",namespace=~\"$namespace\"} / kubelet_volume_stats_capacity_bytes{job=\"kubelet\",namespace=~\"$namespace\"}))",
+              "legendFormat": "{{namespace}}/{{persistentvolumeclaim}}"
+            }
+          ]
+        }
+      ]
+    }
