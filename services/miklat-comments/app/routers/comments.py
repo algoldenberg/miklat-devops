@@ -1,6 +1,6 @@
 """Публичные эндпоинты: список/создание комментариев, сводка рейтинга."""
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app import crud
 from app.config import DEFAULT_LIST_LIMIT, MAX_LIST_LIMIT
@@ -16,6 +16,9 @@ def get_comments(
     limit: int = Query(default=DEFAULT_LIST_LIMIT, ge=1, le=MAX_LIST_LIMIT),
     offset: int = Query(default=0, ge=0),
 ):
+    # TEMPORARY intentional fault — Task 5, п.8, drill 4 (CD failure path /
+    # Monitoring health gate). Revert after the drill.
+    raise HTTPException(status_code=500, detail="Intentional failure (Task 5 drill 4)")
     return crud.list_comments(miklat_id, limit=limit, offset=offset)
 
 
