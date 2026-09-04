@@ -1080,7 +1080,7 @@ Prometheus + Grafana развёрнуты в том же k3s-кластере н
 | Файл/папка | Что содержит |
 |---|---|
 | `values-kube-prometheus-stack.yaml` | Helm values чарта `kube-prometheus-stack`: Prometheus (PVC 5Gi, retention 7d, resources), Grafana (без персистентности — дашборды/датасорсы как код), Alertmanager (demo-receiver), `defaultRules.create: false`/`grafana.defaultDashboardsEnabled: false` (свои алерты/дашборды вместо чартовых), `*SelectorNilUsesHelmValues: false` (discovery ServiceMonitor/PodMonitor/PrometheusRule по всем namespace) |
-| `service-monitors/miklat-app-services.yaml` | `ServiceMonitor` на 7 портов приложения (`namespace: miklat-app`, 15s interval) |
+| `service-monitors/miklat-app-services.yaml` | `ServiceMonitor` на 7 портов приложения — 6 backend (`targetPort: 8000`) + `frontend` (именованный порт `metrics`, добавлен 04.09.2026) (`namespace: miklat-app`, 15s interval) |
 | `slo-recording-rules.yaml` | `PrometheusRule` (recording): 9 правил, 2 группы — availability и latency (см. SLI/SLO ниже) |
 | `alerts/miklat-alerts.yaml` | `PrometheusRule` (alerting): 6 алертов, 4 группы (см. ниже) |
 | `dashboards/application-overview.yaml`, `dashboards/kubernetes-cluster.yaml`, `dashboards/jenkins-delivery.yaml` | 3 обязательных дашборда — каждый `ConfigMap` (лейбл `grafana_dashboard: "1"`) с вложенным JSON |
@@ -1091,6 +1091,8 @@ ServiceMonitor для самого Jenkins отдельным файлом не 
 
 Дополнительно (интеграция с CI/CD, Задание 4 файлы обновлены, не пересозданы): `ci/validate_monitoring.py` (новый), `Jenkinsfile-ci` (новая стадия `Validate monitoring manifests`), `Jenkinsfile-cd` (новая стадия `Monitoring health gate`), `jenkins/network-policy.yaml` (добавлено правило egress для `cd-agent` → `observability`). А также `runbooks/*.md` — 6 файлов, по одному на каждый алерт (см. ниже).
 
+Позже, при добавлении метрик frontend (04.09.2026): `helm/miklat-app/templates/frontend.yaml` (добавлен sidecar-контейнер `nginx-prometheus-exporter`), `Jenkinsfile-ci` (исправлена логика детектора изменившихся сервисов — см. находки ниже), `Jenkinsfile-cd` (health-gate расширен на `frontend`), `monitoring/network-policy.yaml` (добавлен порт `9113` в `allow-prometheus-egress` — см. находки ниже).
+
 ### Что мониторится
 
 | Источник | Как собирается | Что видно |
@@ -1099,7 +1101,7 @@ ServiceMonitor для самого Jenkins отдельным файлом не 
 | Kubernetes (k3s) | `kube-state-metrics`, `node-exporter`, kubelet/cAdvisor | ноды, поды, ресурсы (CPU/memory/throttling), рестарты, `Deployment` replicas desired vs available, PVC usage |
 | Jenkins | плагин `prometheus` (`/prometheus`) | очередь сборок, executors/agents по label, health score и результат последнего билда по job, uptime |
 
-`frontend` (nginx) метрики в этой итерации не инструментированы — сознательное решение: ни SLI/SLO, ни один из 6 обязательных алертов, ни 2 из 3 дашбордов на frontend не завязаны (SLO строится на API backend-сервисов), отложено на конец Фазы 5 (нужен отдельный `nginx-prometheus-exporter`-сайдкар).
+`frontend` (nginx) — метрики добавлены отдельным шагом в конце Фазы 5 (04.09.2026, после основного объёма работ по Заданию 5): sidecar-контейнер `nginx-prometheus-exporter:1.5.1` в том же поде читает `stub_status` (`frontend/nginx.conf`, `location /nginx_status`, доступ только с `127.0.0.1` — тот же под) и отдаёт `/metrics` в формате Prometheus на порту `9113`; `ServiceMonitor` (в отличие от 6 backend-сервисов) ссылается на порт по имени (`port: metrics`), т.к. Service `frontend` — единственный, кто именует свои порты (у него их два: `http`/`metrics`). Ни SLI/SLO, ни один из 6 обязательных алертов, ни 2 из 3 дашбордов на frontend по-прежнему не завязаны (SLO строится на API backend-сервисов) — метрики frontend дают только базовую видимость (`up`, счётчики соединений/запросов nginx), без прикладной латентности (см. ограничение `nginx-prometheus-exporter` ниже).
 
 ### Дашборды (Grafana)
 
@@ -1135,7 +1137,7 @@ ServiceMonitor для самого Jenkins отдельным файлом не 
 ### CI/CD-интеграция
 
 - **CI** (`Jenkinsfile-ci`, стадия `Validate monitoring manifests`, сразу после `Validate`): `ci/validate_monitoring.py` — статическая проверка схемы (без обращения к кластеру) `PrometheusRule`/`ServiceMonitor`/dashboard-`ConfigMap` — падает с понятной ошибкой на отсутствующем `runbook_url`, пустых `panels` и т.п. Сам деплой дашбордов/правил через CI не делается (Observability as Code — только `git → kubectl apply` вручную/на сервере).
-- **CD** (`Jenkinsfile-cd`, стадия `Monitoring health gate`, после `Smoke test`, пропускается для `frontend`): пауза 30с (2 цикла scrape), затем через Prometheus API проверяются `up{job=<service>}==1`, `job:http_request_availability:ratio5m >= 0.98`, `job:http_request_duration_highr_seconds:p95_5m < 0.4` — те же recording rules из SLI/SLO, без дублирования формул. Провал любой проверки — `error()`, автоматически запускающий уже существующий `post{failure}` `helm rollback` (новой rollback-логики не потребовалось).
+- **CD** (`Jenkinsfile-cd`, стадия `Monitoring health gate`, после `Smoke test`): пауза 30с (2 цикла scrape), затем через Prometheus API проверяются `up{job=<service>}==1`, `job:http_request_availability:ratio5m >= 0.98`, `job:http_request_duration_highr_seconds:p95_5m < 0.4` — те же recording rules из SLI/SLO, без дублирования формул. Провал любой проверки — `error()`, автоматически запускающий уже существующий `post{failure}` `helm rollback` (новой rollback-логики не потребовалось). Для `frontend` (04.09.2026) стадия не пропускается, а сокращена: проверяется только `up{job="frontend"}==1` — recording rules availability/latency построены на гистограмме `http_request_duration_seconds` из `prometheus-fastapi-instrumentator`, которой у nginx-экспортёра нет (он отдаёт только счётчики соединений/запросов, без прикладной латентности запроса).
 
 Реальный сквозной прогон подтверждён (`docs/evidence/task5/cd-health-gate-successful-run.txt`): билд `miklat-cd` для `miklat-gateway` прошёл health-gate с `up=1`, `availability=1` (100%), `p95≈23мс` — пайплайн завершился `SUCCESS`.
 
@@ -1159,8 +1161,16 @@ ServiceMonitor для самого Jenkins отдельным файлом не 
 
 В отличие от формулировки в разделе Security Задания 3/4 (там зафиксировано, что дефолтный CNI `flannel` NetworkPolicy не enforce'ит) — начиная с Фазы 5 подтверждено, что k3s на этом кластере реально enforce'ит `NetworkPolicy` через собственный встроенный контроллер (если явно не передан флаг `--disable-network-policy`; см. также инцидент с JNLP-портом Jenkins в Задании 4, где это было впервые обнаружено). Обе оговорки в предыдущих разделах README про "flannel не enforce'ит" на момент их написания были честной, но впоследствии опровергнутой находкой — актуальное состояние отражено здесь и будет приведено в соответствие в остальных разделах при переводе README (Фаза 6).
 
+### Находки при внедрении метрик frontend (04.09.2026)
+
+Обе находки — реальные, обнаруженные не при планировании, а по факту сбоя, с диагностикой и исправлением, применённым на кластере.
+
+**1. Баг детектора изменившихся сервисов в CI при многокоммитных пушах (`Jenkinsfile-ci`).** Стадия `Detect changed services` сравнивала `git diff --name-only HEAD~1 HEAD` — то есть только последний коммит пуша со своим непосредственным родителем. При пуше из нескольких коммитов это могло молча пропустить сервис, если путь к нему менялся в одном из более ранних коммитов пуша, а не в последнем — ровно так был потерян билд `frontend/nginx.conf` в рамках этой же работы. Исправлено: базой для diff теперь служит `env.GIT_PREVIOUS_SUCCESSFUL_COMMIT` (переменная плагина Jenkins Git — SHA последнего успешного билда этого job'а), с фолбэком на `HEAD~1` (самый первый билд) и далее на «собрать все сервисы», если базовый коммит недостижим при shallow-клоне.
+
+**2. `NetworkPolicy` в кластере реально enforce'ится — ещё одно, второе по счёту подтверждение (после инцидента с JNLP-портом Jenkins, Задание 4).** После деплоя sidecar-экспортёра `up{job="frontend"}` стабильно возвращал `0` с `lastError: connection refused`, хотя под, эндпоинт и `curl` изнутри того же namespace и из `observability` через debug-под — всё работало. Причина: `allow-prometheus-egress` в `monitoring/network-policy.yaml` разрешал egress из `observability` в `miklat-app` только на порт `8000` (под 6 существующих backend-сервисов) — порт `9113` нового экспортёра был не указан и потому блокировался. Исправлено добавлением `port: 9113` в то же правило, применено `kubectl apply -f monitoring/network-policy.yaml`, после чего `up{job="frontend"}` стал `1`. Формулировки про «flannel не enforce'ит NetworkPolicy» в разделах Security Заданий 3 и 4 остаются как есть до перевода README в Фазе 6 (см. оговорку выше) — эта находка лишь ещё раз подтверждает то же исправление понимания, что уже отражено в этом разделе.
+
 ### Известные компромиссы (trade-offs) и открытые пункты
 
-- **Метрики `frontend` (nginx)** — сознательно отложены на конец Фазы 5 (нужен `nginx.conf`/Dockerfile фронтенда для сайдкара `nginx-prometheus-exporter`), ни один обязательный SLI/SLO/алерт/дашборд от них не зависит.
+- **Метрики `frontend` (nginx)** — реализованы (см. выше) в упрощённом виде: только `up` и nginx-счётчики соединений/запросов, без прикладной латентности (нет `http_request_duration_seconds` — это метрика `prometheus-fastapi-instrumentator`, которой во frontend нет и не может быть без переписывания статики на приложение); ни один обязательный SLI/SLO/алерт/дашборд от этого не зависит — они и так были рассчитаны только на backend.
 - **Alertmanager receiver — demo-вебхук**, не реальный Slack/PagerDuty — осознанно, чтобы не заводить в репозитории реальные секреты нотификаций.
 - **Учения отказа (п.8, 4 сценария)** и соответствующий evidence в `docs/evidence/task5/` — в процессе; секции "Evidence" в `runbooks/*.md` пока содержат плейсхолдеры, будут дополнены реальными командами/выводом по мере прогона каждого сценария.
