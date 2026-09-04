@@ -54,3 +54,6 @@ jenkins/**/credentials.xml
 
 # OSRM routing dataset (regenerated locally via osrm-extract/partition/customize, Фаза 1 шаг 4)
 data/
+
+# OSRM routing dataset (regenerated locally via osrm-extract/partition/customize, Фаза 1 шаг 4)
+data/
