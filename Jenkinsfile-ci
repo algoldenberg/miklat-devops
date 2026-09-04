@@ -162,20 +162,43 @@ pipeline {
             }
         }
 
-        stage('Detect changed services') {
+                stage('Detect changed services') {
             steps {
                 container('git') {
                     script {
                         def allServices = ['frontend', 'miklat-gateway', 'miklat-service', 'miklat-comments', 'miklat-routes', 'miklat-walking-routes', 'miklat-photos']
                         def changed = []
-                        def diffExit = sh(script: 'git rev-parse HEAD~1 >/dev/null 2>&1', returnStatus: true)
-                        if (diffExit == 0) {
-                            def changedFiles = sh(script: 'git diff --name-only HEAD~1 HEAD', returnStdout: true).trim().split('\n')
-                            for (svc in allServices) {
-                                def prefix = (svc == 'frontend') ? 'frontend/' : "services/${svc}/"
-                                if (changedFiles.any { it.startsWith(prefix) }) {
-                                    changed << svc
+                        // Реальный баг, найденный 04.09.2026 (Задание 5, метрики
+                        // фронтенда): раньше сравнивали только HEAD~1..HEAD — при
+                        // пуше из нескольких коммитов сразу это видело только
+                        // последний коммит и теряло изменения сервисов из более
+                        // ранних коммитов того же пуша (конкретно — коммит с
+                        // frontend/nginx.conf "потерялся" внутри пуша из 6
+                        // коммитов, где последним был README.md). Теперь база
+                        // для diff — GIT_PREVIOUS_SUCCESSFUL_COMMIT (Jenkins
+                        // Git-плагин отдаёт SHA коммита последней УСПЕШНОЙ сборки
+                        // этого же job'а) — покрывает весь диапазон с прошлого
+                        // раза, когда сервисы реально проверялись, независимо от
+                        // числа коммитов/пушей с тех пор. HEAD~1 остаётся
+                        // fallback'ом на случай самой первой сборки job'а.
+                        def baseCommit = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
+                        if (!baseCommit) {
+                            def hasParent = sh(script: 'git rev-parse HEAD~1 >/dev/null 2>&1', returnStatus: true) == 0
+                            baseCommit = hasParent ? 'HEAD~1' : null
+                        }
+                        if (baseCommit) {
+                            def baseExists = sh(script: "git cat-file -e ${baseCommit} 2>/dev/null", returnStatus: true) == 0
+                            if (baseExists) {
+                                def changedFiles = sh(script: "git diff --name-only ${baseCommit} HEAD", returnStdout: true).trim().split('\n')
+                                for (svc in allServices) {
+                                    def prefix = (svc == 'frontend') ? 'frontend/' : "services/${svc}/"
+                                    if (changedFiles.any { it.startsWith(prefix) }) {
+                                        changed << svc
+                                    }
                                 }
+                            } else {
+                                echo "Базовый коммит ${baseCommit} недоступен в этом чекауте (например, мелкий clone) — на всякий случай собираем все сервисы."
+                                changed = allServices
                             }
                         } else {
                             echo 'Нет предыдущего коммита для сравнения — собираем все сервисы.'
