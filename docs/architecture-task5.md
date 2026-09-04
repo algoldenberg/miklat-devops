@@ -24,7 +24,7 @@ flowchart TB
 
     subgraph MBDAI["mbdai — k3s, single node"]
         subgraph NS_APP["namespace: miklat-app"]
-            SVC1["frontend"]
+            SVC1["frontend<br/>+ nginx-prometheus-exporter sidecar<br/>:9113/metrics"]
             SVC2["miklat-gateway<br/>/metrics"]
             SVC3["miklat-service<br/>/metrics"]
             SVC4["miklat-comments<br/>/metrics"]
@@ -66,6 +66,7 @@ flowchart TB
     OPER -->|configures scrape jobs| PROM
     SM -.->|discovers| PROM
     SMJ -.->|discovers| PROM
+    PROM -->|"scrape /metrics, 15s<br/>(via exporter, reads stub_status over 127.0.0.1)"| SVC1
     PROM -->|scrape /metrics, 15s| SVC2
     PROM -->|scrape /metrics, 15s| SVC3
     PROM -->|scrape /metrics, 15s| SVC4
@@ -85,7 +86,7 @@ flowchart TB
     GRAF --> DASH2
     GRAF --> DASH3
 
-    CDAGENT -->|"curl (NetworkPolicy-allowed)<br/>up / availability / p95 recording rules"| PROM
+    CDAGENT -->|"curl (NetworkPolicy-allowed)<br/>up / availability / p95 recording rules<br/>(frontend: up only)"| PROM
     CDAGENT -.->|"error() on threshold breach"| JCTRL
     JCTRL -->|"post{failure}: helm rollback"| NS_APP
 
@@ -111,6 +112,8 @@ Key points visible on the diagram:
 - `observability` is a separate namespace from both `miklat-app` and `jenkins` — Prometheus reaches into both via `ServiceMonitor`/`PodMonitor` objects (discovery, no manual target list) and `NetworkPolicy` explicitly allows each real scrape path (application services, Jenkins `/prometheus` endpoint, kube-state-metrics, node-exporter).
 - `ruleNamespaceSelector: {}` on the Prometheus Operator means `PrometheusRule` objects are picked up from any namespace without a matching label — both the recording-rule group and the alert group live in `monitoring/`, not inside `observability`'s own manifests, and are still loaded.
 - SLO recording rules (`slo-recording-rules.yaml`) are the single source of truth for availability/latency math — both the Grafana dashboards and the CD health-gate query the *same* recorded series (`job:http_request_availability:ratio5m`, `job:http_request_duration_highr_seconds:p95_5m`), not duplicated PromQL.
+- `frontend` (nginx) has no application-level `/metrics` — instead a `nginx-prometheus-exporter` sidecar in the same pod (added 04.09.2026) reads nginx's `stub_status` over loopback (`127.0.0.1`, not exposed outside the pod) and exposes `/metrics` on port `9113`, scraped by the same `ServiceMonitor` as the 6 backend services (by port name, not number — `frontend`'s Service is the only one with named ports). It only provides `up` plus nginx connection/request counters — no per-request latency histogram (that's `prometheus-fastapi-instrumentator`, present only in the 6 Python backends) — so the CD health gate checks only `up` for `frontend`, not availability/p95.
 - The CD health gate (`cd-agent-*`, Jenkinsfile-cd, added in Task 5 п.7) is the only component that closes the loop back from monitoring into CI/CD: it queries Prometheus after every deploy and calls `error()` on a threshold breach, which triggers the pre-existing `post{failure}` `helm rollback` — no new rollback logic was needed.
+- `NetworkPolicy` in this cluster genuinely enforces egress, not just declaratively — confirmed twice: the Jenkins JNLP-port incident (Task 4) and, while wiring up the `nginx-prometheus-exporter` above (04.09.2026), `allow-prometheus-egress` initially allowed only port `8000` (the 6 backends) and silently blocked Prometheus's scrape of the new exporter's port `9113` (`connection refused`, while ordinary pod-to-pod traffic on that port worked fine) until the rule was updated.
 - Alertmanager's receiver (`demo-webhook` → `https://httpbin.org/post`) is a safe demo endpoint, not a real paging channel — chosen deliberately so no real secrets/webhook URLs need to live in the repo for this project's routing to be demonstrable.
 - `kubectl port-forward` (used throughout Task 5 for verification) is a manual, human-only access path — no automatic part of the system (scraping, dashboard provisioning, alert evaluation) depends on it being active. Neither Prometheus nor Grafana is exposed via Ingress.
