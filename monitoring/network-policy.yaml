@@ -196,10 +196,16 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
-    # 6 backend-сервисов приложения (namespace miklat-app) — все ServiceMonitor
-    # используют порт 8000. В miklat-app нет собственной NetworkPolicy
-    # (подтверждено `kubectl get networkpolicy -n miklat-app` → пусто),
-    # поэтому здесь ограничиваем только исходящую сторону Prometheus.
+        # 6 backend-сервисов приложения + frontend (namespace miklat-app) —
+    # backend ServiceMonitor'ы используют порт 8000; frontend (Задание 5,
+    # метрики фронтенда, добавлено 04.09.2026) — отдельный sidecar
+    # nginx-prometheus-exporter на порту 9113 (реальный баг, найденный при
+    # проверке: без этого порта Prometheus получал connection refused,
+    # хотя обычные поды до 9113 доставали нормально — egress-политика
+    # молча резала именно Prometheus). В miklat-app нет собственной
+    # NetworkPolicy (подтверждено `kubectl get networkpolicy -n miklat-app`
+    # → пусто), поэтому здесь ограничиваем только исходящую сторону
+    # Prometheus.
     - to:
         - namespaceSelector:
             matchLabels:
@@ -207,6 +213,8 @@ spec:
       ports:
         - protocol: TCP
           port: 8000
+        - protocol: TCP
+          port: 9113
 ---
 # 4. Ingress пода Prometheus — Grafana (datasource-запросы PromQL) и,
 #    добавлено 04.09.2026 (Фаза 5, п.7 — CD post-deploy monitoring
