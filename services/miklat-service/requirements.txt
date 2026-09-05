@@ -7,3 +7,5 @@ boto3==1.35.36
 # Задание 5: /metrics + app_info + бизнес-метрики
 prometheus-fastapi-instrumentator==7.1.0
 prometheus-client==0.26.0
+
+# fix: bust poisoned kaniko pip-install cache for miklat-service (см. c6c8ef3)
