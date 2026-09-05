@@ -1,5 +1,5 @@
 export default function RoutePanel({ route, loading, error, onClear }) {
-  if (loading) return <p className="muted">Строим маршрут…</p>;
+  if (loading) return <p className="muted">Building route…</p>;
   if (error) return <p className="error">{error}</p>;
   if (!route) return null;
 
@@ -8,10 +8,10 @@ export default function RoutePanel({ route, loading, error, onClear }) {
   return (
     <div className="route-panel">
       <div>
-        Пешком: <strong>{(route.distance_m / 1000).toFixed(2)} км</strong> · ~{minutes} мин
+        On foot: <strong>{(route.distance_m / 1000).toFixed(2)} km</strong> · ~{minutes} min
       </div>
       <button className="secondary" onClick={onClear}>
-        Скрыть маршрут
+        Hide route
       </button>
     </div>
   );

@@ -1,6 +1,6 @@
 export default function ShelterList({ miklats, selectedId, onSelect, loading }) {
-  if (loading) return <p className="muted">Загрузка укрытий…</p>;
-  if (miklats.length === 0) return <p className="muted">Ничего не найдено по текущим фильтрам.</p>;
+  if (loading) return <p className="muted">Loading shelters…</p>;
+  if (miklats.length === 0) return <p className="muted">No shelters match the current filters.</p>;
 
   return (
     <ul className="shelter-list">
@@ -11,14 +11,14 @@ export default function ShelterList({ miklats, selectedId, onSelect, loading }) 
           onClick={() => onSelect(m.id)}
         >
           <div className="shelter-list-item-title">
-            {m.name || 'Укрытие без названия'}
+            {m.name || 'Unnamed shelter'}
             {m.distance_m !== undefined && (
-              <span className="badge">{Math.round(m.distance_m)} м</span>
+              <span className="badge">{Math.round(m.distance_m)} m</span>
             )}
           </div>
           <div className="shelter-list-item-sub">
             {m.address || m.city || '—'} · {m.type}
-            {!m.accessible && ' · без доступа для колясок'}
+            {!m.accessible && ' · not wheelchair accessible'}
           </div>
         </li>
       ))}

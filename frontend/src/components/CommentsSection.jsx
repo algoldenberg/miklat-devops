@@ -17,7 +17,7 @@ export default function CommentsSection({ miklatId }) {
         setComments(commentsData);
         setSummary(summaryData);
       })
-      .catch(() => setError('Не удалось загрузить комментарии'))
+      .catch(() => setError('Could not load comments'))
       .finally(() => setLoading(false));
   };
 
@@ -37,7 +37,7 @@ export default function CommentsSection({ miklatId }) {
       setForm({ username: '', comment: '', rating: '' });
       load();
     } catch {
-      setError('Не удалось отправить комментарий');
+      setError('Could not submit the comment');
     } finally {
       setSubmitting(false);
     }
@@ -46,7 +46,7 @@ export default function CommentsSection({ miklatId }) {
   return (
     <section className="panel-section">
       <h3>
-        Комментарии
+        Comments
         {summary && summary.ratings_count > 0 && (
           <span className="rating-summary">
             ★ {summary.average_rating?.toFixed(1)} ({summary.ratings_count})
@@ -54,8 +54,8 @@ export default function CommentsSection({ miklatId }) {
         )}
       </h3>
 
-      {loading && <p className="muted">Загрузка…</p>}
-      {!loading && comments.length === 0 && <p className="muted">Пока нет комментариев.</p>}
+      {loading && <p className="muted">Loading…</p>}
+      {!loading && comments.length === 0 && <p className="muted">No comments yet.</p>}
 
       <ul className="comment-list">
         {comments.map((c) => (
@@ -72,18 +72,18 @@ export default function CommentsSection({ miklatId }) {
       <form className="inline-form" onSubmit={handleSubmit}>
         <input
           type="text"
-          placeholder="Ваше имя (необязательно)"
+          placeholder="Your name (optional)"
           value={form.username}
           onChange={(e) => setForm({ ...form, username: e.target.value })}
         />
         <textarea
-          placeholder="Ваш комментарий"
+          placeholder="Your comment"
           value={form.comment}
           onChange={(e) => setForm({ ...form, comment: e.target.value })}
           required
         />
         <select value={form.rating} onChange={(e) => setForm({ ...form, rating: e.target.value })}>
-          <option value="">Без оценки</option>
+          <option value="">No rating</option>
           {[1, 2, 3, 4, 5].map((n) => (
             <option key={n} value={n}>
               {n} ★
@@ -91,7 +91,7 @@ export default function CommentsSection({ miklatId }) {
           ))}
         </select>
         <button type="submit" disabled={submitting}>
-          {submitting ? 'Отправка…' : 'Отправить'}
+          {submitting ? 'Sending…' : 'Send'}
         </button>
       </form>
       {error && <p className="error">{error}</p>}

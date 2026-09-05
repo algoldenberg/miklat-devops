@@ -2,9 +2,9 @@ import { useState } from 'react';
 import { api } from '../api';
 
 const ISSUE_TYPES = [
-  { value: 'closed', label: 'Укрытие закрыто/недоступно' },
-  { value: 'wrong_address', label: 'Неверный адрес/координаты' },
-  { value: 'other', label: 'Другое' },
+  { value: 'closed', label: 'Shelter is closed/inaccessible' },
+  { value: 'wrong_address', label: 'Wrong address/coordinates' },
+  { value: 'other', label: 'Other' },
 ];
 
 export default function ReportForm({ miklatId, onClose }) {
@@ -21,9 +21,9 @@ export default function ReportForm({ miklatId, onClose }) {
         comment: form.comment.trim() || undefined,
         contact: form.contact.trim() || undefined,
       });
-      setResult({ type: 'success', text: 'Спасибо! Жалоба отправлена, администратор проверит укрытие.' });
+      setResult({ type: 'success', text: 'Thank you! The report was sent, an admin will check the shelter.' });
     } catch {
-      setResult({ type: 'error', text: 'Не удалось отправить жалобу, попробуйте ещё раз.' });
+      setResult({ type: 'error', text: 'Could not submit the report, please try again.' });
     } finally {
       setSubmitting(false);
     }
@@ -32,16 +32,16 @@ export default function ReportForm({ miklatId, onClose }) {
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Пожаловаться на укрытие</h3>
+        <h3>Report a shelter</h3>
         {result ? (
           <>
             <p className={result.type === 'error' ? 'error' : 'success'}>{result.text}</p>
-            <button onClick={onClose}>Закрыть</button>
+            <button onClick={onClose}>Close</button>
           </>
         ) : (
           <form onSubmit={handleSubmit} className="stacked-form">
             <label>
-              Тип проблемы
+              Issue type
               <select value={form.issue_type} onChange={(e) => setForm({ ...form, issue_type: e.target.value })}>
                 {ISSUE_TYPES.map((opt) => (
                   <option key={opt.value} value={opt.value}>
@@ -51,24 +51,24 @@ export default function ReportForm({ miklatId, onClose }) {
               </select>
             </label>
             <label>
-              Комментарий (необязательно)
+              Comment (optional)
               <textarea value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
             </label>
             <label>
-              Контакт для связи (необязательно)
+              Contact (optional)
               <input
                 type="text"
                 value={form.contact}
                 onChange={(e) => setForm({ ...form, contact: e.target.value })}
-                placeholder="email или телефон"
+                placeholder="email or phone"
               />
             </label>
             <div className="modal-actions">
               <button type="button" onClick={onClose} className="secondary">
-                Отмена
+                Cancel
               </button>
               <button type="submit" disabled={submitting}>
-                {submitting ? 'Отправка…' : 'Отправить жалобу'}
+                {submitting ? 'Submitting…' : 'Submit report'}
               </button>
             </div>
           </form>

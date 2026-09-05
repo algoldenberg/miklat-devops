@@ -46,6 +46,12 @@ export const api = {
   getMiklat: (id) => request(`/miklats/${id}`),
   nearestMiklats: (lon, lat, limit = 10) =>
     request(`/miklats/nearest?lon=${lon}&lat=${lat}&limit=${limit}`),
+  // "Find Shelters" tab (ShelterSearch.jsx) — production calls this
+  // GET /shelters/nearby/?latitude&longitude&radius&limit; our equivalent is
+  // the same /miklats/nearest endpoint used above, with max_distance_m as
+  // the radius filter (see miklat-service/app/routers/miklats.py).
+  nearbyMiklats: (lon, lat, radius = 1000, limit = 50) =>
+    request(`/miklats/nearest?lon=${lon}&lat=${lat}&max_distance_m=${radius}&limit=${limit}`),
 
   // ---------- comments / rating ----------
   listComments: (miklatId) => request(`/miklats/${miklatId}/comments`),
@@ -94,6 +100,13 @@ export const api = {
   // ---------- маршруты (пешие, miklat-walking-routes) ----------
   routeToMiklat: (miklatId, fromLon, fromLat) =>
     request(`/route-to-miklat/${miklatId}?from_lon=${fromLon}&from_lat=${fromLat}`),
+  // Route between two arbitrary points, with shelters found along the way
+  // (POST /route, buffer_m param — see miklat-walking-routes/app/crud.py).
+  routeBetweenPoints: (from, to, bufferM = 300) =>
+    request('/route', {
+      method: 'POST',
+      body: JSON.stringify({ from: { lon: from.lon, lat: from.lat }, to: { lon: to.lon, lat: to.lat }, buffer_m: bufferM }),
+    }),
 
   // ---------- meta ----------
   ready: () => request('/ready'),

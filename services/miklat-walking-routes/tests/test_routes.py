@@ -20,6 +20,7 @@ FAKE_OSRM_ROUTE = {
 
 def test_post_route_ok(monkeypatch):
     monkeypatch.setattr(osrm_client, "get_route", lambda coords: FAKE_OSRM_ROUTE)
+    monkeypatch.setattr(crud, "miklats_along_route", lambda geometry, buffer_m: [])
     with TestClient(app) as client:
         response = client.post("/route", json={"from": {"lon": 34.78, "lat": 32.08}, "to": {"lon": 34.7818, "lat": 32.0853}})
     assert response.status_code == 200
@@ -28,6 +29,54 @@ def test_post_route_ok(monkeypatch):
     assert body["duration_s"] == 561.4
     assert body["profile"] == "foot"
     assert body["geometry"]["type"] == "LineString"
+    assert body["miklats"] == []
+
+
+def test_post_route_includes_miklats_along_route(monkeypatch):
+    """buffer_m из запроса доходит до crud.miklats_along_route как есть, а
+    найденные миклаты — до ответа как есть (порядок уже задаёт сам SQL-запрос,
+    роутер его не трогает)."""
+    monkeypatch.setattr(osrm_client, "get_route", lambda coords: FAKE_OSRM_ROUTE)
+
+    fake_miklat = {
+        "id": 1,
+        "name": "Test shelter",
+        "address": "Test St 1",
+        "city": "Tel Aviv",
+        "capacity": 20,
+        "accessible": True,
+        "lon": 34.781,
+        "lat": 32.0825,
+        "type": "public_shelter",
+        "description": None,
+        "is_verified": True,
+        "distance_to_route_m": 12.4,
+        "position_on_route": 0.5,
+    }
+    captured = {}
+
+    def fake_miklats_along_route(geometry, buffer_m):
+        captured["geometry"] = geometry
+        captured["buffer_m"] = buffer_m
+        return [fake_miklat]
+
+    monkeypatch.setattr(crud, "miklats_along_route", fake_miklats_along_route)
+
+    with TestClient(app) as client:
+        response = client.post(
+            "/route",
+            json={
+                "from": {"lon": 34.78, "lat": 32.08},
+                "to": {"lon": 34.7818, "lat": 32.0853},
+                "buffer_m": 250,
+            },
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["miklats"] == [fake_miklat]
+    assert captured["buffer_m"] == 250
+    assert captured["geometry"] == FAKE_OSRM_ROUTE["geometry"]
 
 
 def test_post_route_no_route_found(monkeypatch):

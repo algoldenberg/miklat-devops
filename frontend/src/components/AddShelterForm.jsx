@@ -22,10 +22,10 @@ export default function AddShelterForm({ pickedLocation, onStartPicking, onClose
         capacity: form.capacity ? Number(form.capacity) : undefined,
         comment: form.comment.trim() || undefined,
       });
-      setResult({ type: 'success', text: 'Спасибо! Заявка отправлена на модерацию.' });
+      setResult({ type: 'success', text: 'Thanks! Your submission was sent for moderation.' });
       onSubmitted?.();
     } catch {
-      setResult({ type: 'error', text: 'Не удалось отправить заявку, попробуйте ещё раз.' });
+      setResult({ type: 'error', text: 'Could not submit, please try again.' });
     } finally {
       setSubmitting(false);
     }
@@ -34,17 +34,17 @@ export default function AddShelterForm({ pickedLocation, onStartPicking, onClose
   return (
     <div className="modal-backdrop" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()}>
-        <h3>Добавить укрытие</h3>
+        <h3>Add a shelter</h3>
         {result ? (
           <>
             <p className={result.type === 'error' ? 'error' : 'success'}>{result.text}</p>
-            <button onClick={onClose}>Закрыть</button>
+            <button onClick={onClose}>Close</button>
           </>
         ) : (
           <form onSubmit={handleSubmit} className="stacked-form">
             <div className="pick-location-row">
               <button type="button" className="secondary" onClick={onStartPicking}>
-                {pickedLocation ? 'Изменить точку на карте' : 'Указать точку на карте'}
+                {pickedLocation ? 'Change point on the map' : 'Pick a point on the map'}
               </button>
               {pickedLocation && (
                 <span className="muted">
@@ -53,15 +53,15 @@ export default function AddShelterForm({ pickedLocation, onStartPicking, onClose
               )}
             </div>
             <label>
-              Название (необязательно)
+              Name (optional)
               <input type="text" value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </label>
             <label>
-              Адрес (необязательно)
+              Address (optional)
               <input type="text" value={form.address} onChange={(e) => setForm({ ...form, address: e.target.value })} />
             </label>
             <label>
-              Тип укрытия
+              Shelter type
               <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })}>
                 {TYPES.map((t) => (
                   <option key={t} value={t}>
@@ -71,7 +71,7 @@ export default function AddShelterForm({ pickedLocation, onStartPicking, onClose
               </select>
             </label>
             <label>
-              Вместимость, человек (необязательно)
+              Capacity, people (optional)
               <input
                 type="number"
                 min="0"
@@ -80,18 +80,18 @@ export default function AddShelterForm({ pickedLocation, onStartPicking, onClose
               />
             </label>
             <label>
-              Комментарий (необязательно)
+              Comment (optional)
               <textarea value={form.comment} onChange={(e) => setForm({ ...form, comment: e.target.value })} />
             </label>
             <div className="modal-actions">
               <button type="button" onClick={onClose} className="secondary">
-                Отмена
+                Cancel
               </button>
               <button type="submit" disabled={submitting || !pickedLocation}>
-                {submitting ? 'Отправка…' : 'Отправить заявку'}
+                {submitting ? 'Submitting…' : 'Submit'}
               </button>
             </div>
-            {!pickedLocation && <p className="muted">Сначала укажите точку на карте.</p>}
+            {!pickedLocation && <p className="muted">Pick a point on the map first.</p>}
           </form>
         )}
       </div>

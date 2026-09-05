@@ -6,9 +6,9 @@ import markerIconUrl from 'leaflet/dist/images/marker-icon.png';
 import markerIcon2xUrl from 'leaflet/dist/images/marker-icon-2x.png';
 import markerShadowUrl from 'leaflet/dist/images/marker-shadow.png';
 
-// react-leaflet/webpack-less bundlers (vite included) не подхватывают
-// дефолтные иконки Leaflet автоматически — путь к картинкам ломается после
-// сборки. Стандартный обход: явно переопределить иконки через import.
+// react-leaflet/webpack-less bundlers (vite included) don't pick up
+// Leaflet's default icons automatically — the path breaks after the build.
+// Standard workaround: re-point the icons explicitly via import.
 const defaultIcon = L.icon({
   iconUrl: markerIconUrl,
   iconRetinaUrl: markerIcon2xUrl,
@@ -37,6 +37,33 @@ const userIcon = L.divIcon({
   iconAnchor: [9, 9],
 });
 
+// Start/end markers for an address-to-address route (see
+// RouteBetweenAddresses.jsx) — kept visually distinct from userIcon and
+// from the default shelter pins.
+const routeStartIcon = L.divIcon({
+  className: 'route-endpoint-marker',
+  html: '<div class="route-endpoint-dot route-endpoint-dot-start"></div>',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+});
+
+const routeEndIcon = L.divIcon({
+  className: 'route-endpoint-marker',
+  html: '<div class="route-endpoint-dot route-endpoint-dot-end"></div>',
+  iconSize: [16, 16],
+  iconAnchor: [8, 8],
+});
+
+// Shelters found along an address-to-address route (addressRoute.miklats) —
+// a small distinct dot so they read as "on this route", separate from both
+// the default shelter pins and the route start/end markers above.
+const alongRouteIcon = L.divIcon({
+  className: 'along-route-marker',
+  html: '<div class="along-route-dot"></div>',
+  iconSize: [14, 14],
+  iconAnchor: [7, 7],
+});
+
 const TEL_AVIV_CENTER = [32.0853, 34.7818];
 
 function ClickCapture({ enabled, onPick }) {
@@ -53,7 +80,9 @@ export default function MapView({
   selectedId,
   onSelect,
   userLocation,
+  referenceLabel = 'You are here',
   routeGeometry,
+  addressRoute,
   pickMode,
   onPickLocation,
 }) {
@@ -61,6 +90,11 @@ export default function MapView({
     if (!routeGeometry) return null;
     return { type: 'Feature', geometry: routeGeometry, properties: {} };
   }, [routeGeometry]);
+
+  const addressRouteLayer = useMemo(() => {
+    if (!addressRoute?.geometry) return null;
+    return { type: 'Feature', geometry: addressRoute.geometry, properties: {} };
+  }, [addressRoute]);
 
   return (
     <MapContainer
@@ -77,7 +111,7 @@ export default function MapView({
 
       {userLocation && (
         <Marker position={[userLocation.lat, userLocation.lon]} icon={userIcon}>
-          <Popup>Вы здесь</Popup>
+          <Popup>{referenceLabel}</Popup>
         </Marker>
       )}
 
@@ -89,7 +123,7 @@ export default function MapView({
           eventHandlers={{ click: () => onSelect(m.id) }}
         >
           <Popup>
-            <strong>{m.name || 'Укрытие без названия'}</strong>
+            <strong>{m.name || 'Unnamed shelter'}</strong>
             <br />
             {m.address || m.city || ''}
           </Popup>
@@ -97,6 +131,36 @@ export default function MapView({
       ))}
 
       {routeLayer && <GeoJSON key={JSON.stringify(routeLayer)} data={routeLayer} pathOptions={{ color: '#2563eb', weight: 5 }} />}
+
+      {addressRoute?.from && (
+        <Marker position={[addressRoute.from.lat, addressRoute.from.lon]} icon={routeStartIcon}>
+          <Popup>Route start</Popup>
+        </Marker>
+      )}
+      {addressRoute?.to && (
+        <Marker position={[addressRoute.to.lat, addressRoute.to.lon]} icon={routeEndIcon}>
+          <Popup>Route destination</Popup>
+        </Marker>
+      )}
+      {addressRouteLayer && (
+        <GeoJSON
+          key={JSON.stringify(addressRouteLayer)}
+          data={addressRouteLayer}
+          pathOptions={{ color: '#16a34a', weight: 5, dashArray: '6 4' }}
+        />
+      )}
+
+      {(addressRoute?.miklats || []).map((m) => (
+        <Marker key={`route-miklat-${m.id}`} position={[m.lat, m.lon]} icon={alongRouteIcon}>
+          <Popup>
+            <strong>{m.name || 'Unnamed shelter'}</strong>
+            <br />
+            {m.address || m.city || ''}
+            <br />
+            {Math.round(m.distance_to_route_m)} m from route
+          </Popup>
+        </Marker>
+      ))}
     </MapContainer>
   );
 }

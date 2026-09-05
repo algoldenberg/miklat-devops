@@ -13,7 +13,7 @@ export default function PhotosSection({ miklatId }) {
     api
       .listPhotos(miklatId)
       .then(setPhotos)
-      .catch(() => setMessage({ type: 'error', text: 'Не удалось загрузить фото' }))
+      .catch(() => setMessage({ type: 'error', text: 'Could not load photos' }))
       .finally(() => setLoading(false));
   };
 
@@ -28,10 +28,10 @@ export default function PhotosSection({ miklatId }) {
       await api.uploadPhoto(miklatId, file);
       setMessage({
         type: 'success',
-        text: 'Фото отправлено на модерацию — появится здесь после проверки администратором.',
+        text: 'Photo sent for moderation — it will appear here once approved by an admin.',
       });
     } catch (err) {
-      setMessage({ type: 'error', text: err.detail?.detail || 'Не удалось загрузить фото' });
+      setMessage({ type: 'error', text: err.detail?.detail || 'Could not upload the photo' });
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = '';
@@ -40,21 +40,21 @@ export default function PhotosSection({ miklatId }) {
 
   return (
     <section className="panel-section">
-      <h3>Фото</h3>
+      <h3>Photos</h3>
 
-      {loading && <p className="muted">Загрузка…</p>}
-      {!loading && photos.length === 0 && <p className="muted">Пока нет одобренных фото.</p>}
+      {loading && <p className="muted">Loading…</p>}
+      {!loading && photos.length === 0 && <p className="muted">No approved photos yet.</p>}
 
       <div className="photo-grid">
         {photos.map((p) => (
           <a key={p.id} href={p.url} target="_blank" rel="noreferrer">
-            <img src={p.url} alt="Фото укрытия" className="photo-thumb" />
+            <img src={p.url} alt="Shelter photo" className="photo-thumb" />
           </a>
         ))}
       </div>
 
       <label className="upload-label">
-        {uploading ? 'Загрузка…' : 'Добавить фото (jpeg/png/webp, до 8 МБ)'}
+        {uploading ? 'Uploading…' : 'Add a photo (jpeg/png/webp, up to 8 MB)'}
         <input
           ref={fileInputRef}
           type="file"

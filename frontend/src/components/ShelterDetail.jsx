@@ -10,35 +10,35 @@ export default function ShelterDetail({ miklat, userLocation, onBuildRoute, rout
   if (!miklat) {
     return (
       <div className="detail-panel empty">
-        <p className="muted">Выберите укрытие на карте или в списке слева.</p>
+        <p className="muted">Select a shelter on the map or in the list.</p>
       </div>
     );
   }
 
   return (
     <div className="detail-panel">
-      <h2>{miklat.name || 'Укрытие без названия'}</h2>
+      <h2>{miklat.name || 'Unnamed shelter'}</h2>
       <p className="muted">
         {miklat.address || '—'}
         {miklat.city ? `, ${miklat.city}` : ''}
       </p>
       <div className="detail-facts">
         <span className="badge">{miklat.type}</span>
-        {miklat.capacity != null && <span className="badge">до {miklat.capacity} чел.</span>}
-        <span className="badge">{miklat.accessible ? 'доступно для колясок' : 'без доступа для колясок'}</span>
-        {miklat.is_verified && <span className="badge verified">проверено</span>}
+        {miklat.capacity != null && <span className="badge">up to {miklat.capacity} people</span>}
+        <span className="badge">{miklat.accessible ? 'wheelchair accessible' : 'not wheelchair accessible'}</span>
+        {miklat.is_verified && <span className="badge verified">verified</span>}
       </div>
       {miklat.description && <p>{miklat.description}</p>}
 
       <div className="detail-actions">
         <button onClick={() => onBuildRoute(miklat.id)} disabled={!userLocation}>
-          Маршрут пешком отсюда
+          Walking route from here
         </button>
         <button className="secondary" onClick={() => setShowReportForm(true)}>
-          Пожаловаться
+          Report an issue
         </button>
       </div>
-      {!userLocation && <p className="muted small">Разрешите доступ к геолокации, чтобы построить маршрут.</p>}
+      {!userLocation && <p className="muted small">Allow location access or search an address to build a route.</p>}
 
       <RoutePanel route={route} loading={routeLoading} error={routeError} onClear={onClearRoute} />
 
